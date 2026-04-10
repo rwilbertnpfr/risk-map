@@ -3,30 +3,26 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NPFR · ESZ Risk Profile Dashboard</title>
+<title>NPFR · Community Risk Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700&family=Barlow:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <style>
 :root {
-  /* Program colors — per README */
   --fire:    #B71C1C;
   --ems:     #1565C0;
   --hazmat:  #E65100;
   --rescue:  #6A1B9A;
-  /* Station colors — per README */
   --st81:    #D7263D;
   --st82:    #F46036;
   --st83:    #2E294E;
   --st84:    #1B998B;
   --st85:    #C5D86D;
   --st86:    #6A4C93;
-  /* Dark theme — per README */
   --bg:      #0d0d1a;
   --bg2:     #13131f;
   --bg3:     #1a1a2e;
   --border:  #3a3a5c;
-  --border-a: rgba(58,58,92,0.6);
   --text:    #e0e0ff;
   --muted:   #8888aa;
   --accent:  #00cfff;
@@ -34,30 +30,76 @@
   --font-b:  'Barlow', sans-serif;
   --sidebar: 380px;
   --header:  52px;
+  --subhdr:  40px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font-b)}
 
 /* ── LAYOUT ── */
-#app{display:grid;grid-template-rows:var(--header) 1fr;grid-template-columns:1fr var(--sidebar);height:100vh;overflow:hidden}
+#app{
+  display:grid;
+  grid-template-rows:var(--header) 0px 1fr;
+  grid-template-columns:1fr var(--sidebar);
+  height:100vh;
+  overflow:hidden;
+  transition:grid-template-rows .2s ease;
+}
+#app.incident-mode{
+  grid-template-rows:var(--header) var(--subhdr) 1fr;
+}
 #header{grid-column:1/-1;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;padding:0 20px;z-index:1000}
+#subheader{grid-column:1/-1;background:var(--bg);border-bottom:1px solid var(--border);display:flex;align-items:center;overflow:hidden;z-index:999;opacity:0;transition:opacity .2s ease}
+#app.incident-mode #subheader{opacity:1}
 #map-wrap{position:relative;background:var(--bg)}
 #sidebar{background:var(--bg2);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
 
 /* ── HEADER ── */
 .logo{font-family:var(--font-h);font-size:20px;font-weight:700;letter-spacing:.04em;color:var(--fire);white-space:nowrap}
 .logo span{color:var(--text);font-weight:400}
-.hdr-sep{width:1px;height:24px;background:var(--border)}
-.hdr-label{font-family:var(--font-h);font-size:13px;font-weight:500;letter-spacing:.06em;color:var(--muted);text-transform:uppercase}
+.hdr-sep{width:1px;height:24px;background:var(--border);flex-shrink:0}
+.hdr-label{font-family:var(--font-h);font-size:13px;font-weight:500;letter-spacing:.06em;color:var(--muted);text-transform:uppercase;white-space:nowrap}
+
+/* Mode toggle */
+.mode-pills{display:flex;gap:0;border:1px solid var(--border);border-radius:4px;overflow:hidden;flex-shrink:0}
+.mode-pill{font-family:var(--font-h);font-size:12px;font-weight:600;letter-spacing:.07em;padding:5px 14px;border:none;background:transparent;color:var(--muted);cursor:pointer;text-transform:uppercase;transition:all .15s;white-space:nowrap}
+.mode-pill:first-child{border-right:1px solid var(--border)}
+.mode-pill.active{background:rgba(192,0,0,.18);color:var(--text)}
+
+/* Community / Incident control areas */
 #metric-select{background:var(--bg3);border:1px solid var(--border);color:var(--text);font-family:var(--font-b);font-size:13px;padding:5px 10px;border-radius:4px;cursor:pointer;min-width:240px}
 #metric-select:focus{outline:1px solid var(--accent)}
+#community-controls{display:flex;align-items:center;gap:12px}
+#incident-controls{display:none;align-items:center;gap:12px}
+#app.incident-mode #community-controls{display:none}
+#app.incident-mode #incident-controls{display:flex}
+
+/* Station pills */
 .station-pills{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
 .pill{font-family:var(--font-h);font-size:12px;font-weight:600;letter-spacing:.06em;padding:4px 10px;border-radius:3px;border:1px solid var(--border);color:var(--muted);background:transparent;cursor:pointer;transition:all .15s;text-transform:uppercase}
 .pill:hover,.pill.active{border-color:var(--fire);color:var(--text);background:rgba(192,0,0,.15)}
 .pill.all.active{border-color:var(--accent);background:rgba(74,158,255,.12);color:var(--text)}
+
 #export-btn{font-family:var(--font-h);font-size:13px;font-weight:600;letter-spacing:.06em;padding:6px 14px;border-radius:3px;border:1px solid var(--border);color:var(--text);background:var(--bg3);cursor:pointer;text-transform:uppercase;transition:all .15s;white-space:nowrap}
 #export-btn:hover{border-color:var(--accent);background:rgba(74,158,255,.1)}
 #synthetic-badge{font-family:var(--font-h);font-size:11px;font-weight:600;letter-spacing:.08em;padding:3px 8px;border-radius:2px;background:rgba(237,125,49,.15);border:1px solid var(--hazmat);color:var(--hazmat);text-transform:uppercase;display:none}
+#fy-badge{font-family:var(--font-h);font-size:11px;font-weight:600;letter-spacing:.06em;padding:3px 8px;border-radius:2px;background:rgba(0,207,255,.08);border:1px solid rgba(0,207,255,.25);color:var(--accent)}
+
+/* ── SUBHEADER — program + risk tabs ── */
+.prog-tabs{display:flex;height:100%;border-right:1px solid var(--border);flex-shrink:0}
+.prog-tab{font-family:var(--font-h);font-size:12px;font-weight:700;letter-spacing:.08em;padding:0 18px;border:none;background:transparent;color:var(--muted);cursor:pointer;text-transform:uppercase;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap;height:100%}
+.prog-tab:hover{color:var(--text)}
+.prog-tab.active[data-prog="EMS"]   {color:#4a9eff;border-bottom-color:#4a9eff}
+.prog-tab.active[data-prog="Fire"]  {color:#ff5252;border-bottom-color:#ff5252}
+.prog-tab.active[data-prog="Hazmat"]{color:#ff8c00;border-bottom-color:#ff8c00}
+.prog-tab.active[data-prog="Rescue"]{color:#bf5fff;border-bottom-color:#bf5fff}
+
+.risk-tabs{display:flex;height:100%;align-items:center;gap:4px;padding:0 12px}
+.risk-tab{font-family:var(--font-h);font-size:11px;font-weight:600;letter-spacing:.07em;padding:3px 10px;border-radius:3px;border:1px solid transparent;background:transparent;color:var(--muted);cursor:pointer;text-transform:uppercase;transition:all .15s;white-space:nowrap}
+.risk-tab:hover{color:var(--text);border-color:var(--border)}
+.risk-tab.active[data-risk="1-Low"]     {color:#39ff6e;border-color:#39ff6e;background:rgba(57,255,110,.08)}
+.risk-tab.active[data-risk="2-Moderate"]{color:#ff8c00;border-color:#ff8c00;background:rgba(255,140,0,.08)}
+.risk-tab.active[data-risk="3-High"]    {color:#ff2d55;border-color:#ff2d55;background:rgba(255,45,85,.08)}
+.risk-tab.active[data-risk="4-Maximum"] {color:#bf5fff;border-color:#bf5fff;background:rgba(191,95,255,.08)}
 
 /* ── MAP ── */
 #map{width:100%;height:100%}
@@ -67,17 +109,15 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .sidebar-header{padding:16px 20px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
 .sidebar-title{font-family:var(--font-h);font-size:22px;font-weight:700;letter-spacing:.02em;line-height:1.1}
 .sidebar-sub{font-size:12px;color:var(--muted);margin-top:4px}
-.sidebar-body{flex:1;overflow-y:auto;overflow-x:hidden;padding:16px 16px}
+.sidebar-body{flex:1;overflow-y:auto;overflow-x:hidden;padding:16px}
 .sidebar-body::-webkit-scrollbar{width:4px}
 .sidebar-body::-webkit-scrollbar-track{background:transparent}
 .sidebar-body::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
 
-/* ── SECTION HEADERS ── */
 .sec-hdr{font-family:var(--font-h);font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);padding:10px 0 6px;margin-top:4px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
 .sec-hdr:first-child{padding-top:0;margin-top:0}
 .sec-hdr::after{content:'';flex:1;height:1px;background:var(--border)}
 
-/* ── VERTICAL KV TABLE ── */
 .kv-table{width:100%;border-collapse:collapse;margin-bottom:4px}
 .kv-table tr{border-bottom:1px solid rgba(58,58,92,0.25)}
 .kv-table tr:last-child{border-bottom:none}
@@ -89,12 +129,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .dq-review{color:var(--hazmat);font-weight:700}
 .dq-low{color:var(--fire);font-weight:700}
 
-/* ── MINI BAR ── */
 .mini-bar-wrap{display:flex;align-items:center;gap:6px;justify-content:flex-end}
 .mini-bar-track{height:5px;width:60px;background:rgba(58,58,92,0.5);border-radius:2px;flex-shrink:0}
 .mini-bar-fill{height:100%;border-radius:2px;transition:width .3s}
 
-/* ── CATEGORY CARDS ── */
 .cat-cards{display:flex;flex-direction:column;gap:6px}
 .cat-card{background:var(--bg3);border:1px solid rgba(58,58,92,0.5);border-radius:4px;padding:8px 10px}
 .cat-card-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
@@ -108,7 +146,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .pct-bar-track{height:4px;background:rgba(58,58,92,0.5);border-radius:2px}
 .pct-bar-fill{height:100%;border-radius:2px;background:#ddb800;transition:width .3s}
 
-/* ── STATION SUMMARY ── */
 .station-card{background:var(--bg3);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:4px;padding:10px 12px;margin-bottom:6px;cursor:pointer;transition:all .15s}
 .station-card:hover{border-color:var(--accent)}
 .sc-head{font-family:var(--font-h);font-size:18px;font-weight:700;letter-spacing:.04em;margin-bottom:6px}
@@ -117,12 +154,21 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .sc-kv-lbl{color:var(--muted);text-transform:uppercase;letter-spacing:.04em;font-size:10px}
 .sc-kv-val{color:var(--text);font-weight:600;font-family:var(--font-h);font-size:14px}
 
-/* ── ACTION BUTTONS ── */
 .action-row{display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
 .btn-sec{font-family:var(--font-h);font-size:12px;font-weight:600;letter-spacing:.06em;padding:7px 14px;border-radius:3px;border:1px solid var(--border);color:var(--muted);background:var(--bg3);cursor:pointer;text-transform:uppercase;flex:1;transition:all .15s}
 .btn-sec:hover{border-color:var(--text);color:var(--text)}
 .btn-pri{font-family:var(--font-h);font-size:12px;font-weight:600;letter-spacing:.06em;padding:7px 14px;border-radius:3px;border:1px solid rgba(0,207,255,.3);color:var(--accent);background:rgba(0,207,255,.07);cursor:pointer;text-transform:uppercase;flex:1;transition:all .15s}
 .btn-pri:hover{background:rgba(0,207,255,.14)}
+
+/* ── INCIDENT SIDEBAR cards ── */
+.incident-stat-card{background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:10px 12px;margin-bottom:6px}
+.isc-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+.isc-prog{font-family:var(--font-h);font-size:16px;font-weight:700;letter-spacing:.04em}
+.isc-risk{font-family:var(--font-h);font-size:12px;font-weight:600;letter-spacing:.06em;padding:2px 8px;border-radius:2px}
+.isc-kv{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.isc-kv-item{font-size:11px}
+.isc-kv-lbl{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+.isc-kv-val{color:var(--text);font-weight:600;font-family:var(--font-h);font-size:15px}
 
 /* ── LEGEND ── */
 #legend{position:absolute;bottom:24px;left:16px;z-index:900;background:rgba(13,15,20,.88);border:1px solid var(--border);border-radius:4px;padding:10px 14px;min-width:160px;backdrop-filter:blur(8px)}
@@ -137,15 +183,13 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 #load-overlay .load-spinner{width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-/* ── EMPTY STATE ── */
 .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:12px;color:var(--muted);text-align:center;padding:40px}
 .empty-icon{font-size:40px;opacity:.3}
 .empty-title{font-family:var(--font-h);font-size:18px;font-weight:600;letter-spacing:.04em;color:var(--text)}
 
-/* ── PRINT / PDF ── */
 @media print{
   #app{display:block;height:auto}
-  #header{display:none}
+  #header,#subheader{display:none}
   #sidebar{display:none}
   #map-wrap{height:100vh}
 }
@@ -153,43 +197,64 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 </head>
 <body>
 
-<!-- Loading overlay — removed after data fetch completes -->
 <div id="load-overlay">
   <div class="load-spinner"></div>
-  <div class="load-title">NPFR · ESZ Dashboard</div>
+  <div class="load-title">NPFR · Community Risk</div>
   <div class="load-msg" id="load-msg">Loading data…</div>
 </div>
 
 <div id="app">
+
+  <!-- ── MAIN HEADER ── -->
   <header id="header">
-    <div class="logo">NPFR <span>· ESZ Dashboard</span></div>
+    <div class="logo">NPFR <span>· Community Risk</span></div>
     <div class="hdr-sep"></div>
-    <span class="hdr-label">Metric</span>
-    <select id="metric-select">
-      <option value="est_population">Est. Population</option>
-      <option value="pct_hydrant_1000ft">Hydrant Coverage (%)</option>
-      <option value="pct_flood_ae">Flood Zone AE (%)</option>
-      <option value="sfr_units">SFR Units</option>
-      <option value="multifamily_units">Multifamily Units</option>
-      <option value="mobile_units">Mobile Home Units</option>
-      <option value="alf_units">ALF Units</option>
-      <option value="industrial_units">Industrial Units</option>
-      <option value="sfr_pct">SFR %</option>
-      <option value="sfr_flood_pct">SFR Flood %</option>
-      <option value="industrial_flood_pct">Industrial Flood %</option>
-      <option value="vacant_units">Vacant Units</option>
-      <option value="vacant_pct">Vacant %</option>
-    </select>
+
+    <div class="mode-pills">
+      <button class="mode-pill active" id="mode-community" onclick="setMode('community')">Community</button>
+      <button class="mode-pill"        id="mode-incident"  onclick="setMode('incident')">Incident Risk</button>
+    </div>
+    <div class="hdr-sep"></div>
+
+    <div id="community-controls">
+      <span class="hdr-label">Community</span>
+      <select id="metric-select">
+        <option value="est_population">Est. Population</option>
+        <option value="pct_hydrant_1000ft">Hydrant Coverage (%)</option>
+        <option value="pct_flood_ae">Flood Zone AE (%)</option>
+        <option value="sfr_units">SFR Units</option>
+        <option value="multifamily_units">Multifamily Units</option>
+        <option value="mobile_units">Mobile Home Units</option>
+        <option value="alf_units">ALF Units</option>
+        <option value="industrial_units">Industrial Units</option>
+        <option value="sfr_pct">SFR %</option>
+        <option value="sfr_flood_pct">SFR Flood %</option>
+        <option value="industrial_flood_pct">Industrial Flood %</option>
+        <option value="vacant_units">Vacant Units</option>
+        <option value="vacant_pct">Vacant %</option>
+      </select>
+    </div>
+
+    <div id="incident-controls">
+      <span class="hdr-label">Incident Risk</span>
+      <div id="fy-badge">—</div>
+    </div>
+
     <div class="hdr-sep"></div>
     <span class="hdr-label">Station</span>
-    <div class="station-pills" id="station-pills">
-      <!-- Populated after data load -->
-    </div>
+    <div class="station-pills" id="station-pills"></div>
     <div class="hdr-sep"></div>
     <button id="export-btn" onclick="exportPDF()">⬇ Export PDF</button>
     <div id="synthetic-badge">Synthetic Data</div>
   </header>
 
+  <!-- ── SUB HEADER — program + risk level tabs ── -->
+  <div id="subheader">
+    <div class="prog-tabs" id="prog-tabs"></div>
+    <div class="risk-tabs" id="risk-tabs"></div>
+  </div>
+
+  <!-- ── MAP ── -->
   <div id="map-wrap">
     <div id="map"></div>
     <div id="legend">
@@ -198,6 +263,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
     </div>
   </div>
 
+  <!-- ── SIDEBAR ── -->
   <aside id="sidebar">
     <div class="sidebar-header">
       <div class="sidebar-title" id="sidebar-title">Overview</div>
@@ -211,68 +277,101 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
       </div>
     </div>
   </aside>
+
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-// ── ERROR HANDLER ──────────────────────────────────────────────────────────
+// ── ERROR HANDLER ─────────────────────────────────────────────────────────
 window.onerror = function(msg, src, ln, col, err) {
   var el = document.getElementById('map');
   if (!el) return false;
   var stack = err && err.stack ? err.stack.split('\n').join('<br>') : '';
-  el.innerHTML = '<div style="padding:24px;font-family:monospace;font-size:13px;color:#ff6b6b;background:#1a0000;height:100%;overflow:auto;box-sizing:border-box">'
+  el.innerHTML = '<div style="padding:24px;font-family:monospace;font-size:13px;color:#ff6b6b;'
+    + 'background:#1a0000;height:100%;overflow:auto;box-sizing:border-box">'
     + '<strong>JS ERROR</strong><br><br>' + msg
     + '<br>Line ' + ln + '  col ' + col
     + '<br><br>' + stack + '</div>';
   return false;
 };
 
-// ── RUNTIME DATA (populated by init()) ────────────────────────────────────
-let ESZ_GEOJSON  = null;
-let STATION_GEO  = null;
-let FACILITY_GEO = null;
-let STATION_SUMS = null;
-let CATEGORIES   = null;
-let STATIONS     = null;
-let SYNTHETIC    = false;
+// ── RUNTIME DATA ──────────────────────────────────────────────────────────
+let ESZ_GEOJSON   = null;  // FeatureCollection — community profile props + geometry
+let STATION_GEO   = null;
+let FACILITY_GEO  = null;
+let STATION_SUMS  = null;
+let CATEGORIES    = null;
+let STATIONS      = null;
+let SYNTHETIC     = false;
+
+// ESZ_COUNTS: { "ESZ-ID": { ems_1low: N, fire_2moderate: N, fy_range: "...", ... } }
+let ESZ_COUNTS    = null;
+// PROG_RISK_MAP: { EMS: ["1-Low","2-Moderate","3-High"], Fire: [...], ... }
+// Built dynamically by inspecting column names — mirrors available_programs_risks()
+let PROG_RISK_MAP = {};
 
 const STATION_COLORS = {
   ST81:'#D7263D', ST82:'#F46036', ST83:'#2E294E',
   ST84:'#1B998B', ST85:'#C5D86D', ST86:'#6A4C93',
 };
 
-// ── STATE ──────────────────────────────────────────────────────────────────
-let activeStation = "ALL";
+// Risk colors — atomic ramps from render_riskmaps.py
+const RISK_NEON = {
+  '1-Low':      '#39ff6e',
+  '2-Moderate': '#ff8c00',
+  '3-High':     '#ff2d55',
+  '4-Maximum':  '#bf5fff',
+};
+const RISK_DARK = {
+  '1-Low':      '#0d1f0d',
+  '2-Moderate': '#1f1200',
+  '3-High':     '#1f0000',
+  '4-Maximum':  '#0f001f',
+};
+const ZERO_BAND_COLOR = '#0a1628';
+const N_BANDS = 4;
+
+const PROG_COLORS = {
+  EMS:'#1565C0', Fire:'#B71C1C', Hazmat:'#E65100', Rescue:'#6A1B9A',
+};
+
+// ── APP STATE ─────────────────────────────────────────────────────────────
+let activeMode    = 'community';
+let activeStation = 'ALL';
 let activeESZ     = null;
-let choroplethLayer = null;
-let currentMetric   = "est_population";
+let activeProgram = null;
+let activeRisk    = null;
+let currentMetric = 'est_population';
+let choroplethLayer      = null;
+let stationBoundaryLayer = null;
+let stationLabelLayer    = null;
 
-// ── MAP (init before data so tiles load in parallel) ───────────────────────
-if (typeof L === "undefined") {
-  throw new Error("Leaflet failed to load — check internet connection.");
-}
+// ── MAP INIT ──────────────────────────────────────────────────────────────
+if (typeof L === 'undefined') throw new Error('Leaflet failed to load.');
 const map = L.map('map', {
-  center: [27.03, -82.38], zoom: 11,
-  zoomControl: false, attributionControl: false,
+  center:[27.03,-82.38], zoom:11,
+  zoomControl:false, attributionControl:false,
 });
-L.control.zoom({ position: 'bottomright' }).addTo(map);
+L.control.zoom({position:'bottomright'}).addTo(map);
 
+let windowFocused = true;
 function closeAllTooltips() {
   map.eachLayer(l => { if (l.getTooltip && l.getTooltip()) l.closeTooltip(); });
 }
-document.addEventListener('mouseenter', closeAllTooltips);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) closeAllTooltips(); });
+window.addEventListener('blur',  () => { windowFocused = false; closeAllTooltips(); });
+window.addEventListener('focus', () => { windowFocused = true; });
+document.addEventListener('visibilitychange', closeAllTooltips);
 document.getElementById('map').addEventListener('mouseleave', closeAllTooltips);
 
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-  maxZoom: 19, opacity: 0.7
+  maxZoom:19, opacity:0.7,
 }).addTo(map);
 
-// ── DATA FETCH ─────────────────────────────────────────────────────────────
+// ── DATA FETCH ────────────────────────────────────────────────────────────
 async function init() {
   const msg = document.getElementById('load-msg');
   try {
-    msg.textContent = 'Fetching ESZ profiles…';
+    msg.textContent = 'Fetching community profiles…';
     const [eszResp, sumsResp] = await Promise.all([
       fetch('data/esz_profiles.json'),
       fetch('data/esz_station_sums.json'),
@@ -282,186 +381,218 @@ async function init() {
 
     msg.textContent = 'Parsing data…';
     const [eszData, sumsData] = await Promise.all([eszResp.json(), sumsResp.json()]);
-
     ESZ_GEOJSON  = eszData;
     STATION_SUMS = sumsData;
     CATEGORIES   = eszData.metadata?.categories || [];
     STATIONS     = eszData.metadata?.stations   || [];
     SYNTHETIC    = eszData.metadata?.synthetic  || false;
 
-    // Optional layers — non-fatal if absent
+    msg.textContent = 'Fetching incident counts…';
+    const countsResp = await fetch('data/esz_counts.json');
+    if (countsResp.ok) {
+      ESZ_COUNTS = await countsResp.json();
+      buildProgRiskMap();
+    } else {
+      console.warn('[NPFR] esz_counts.json not found — Incident Risk mode unavailable.');
+      const btn = document.getElementById('mode-incident');
+      btn.disabled = true;
+      btn.style.opacity = '0.35';
+      btn.title = 'Incident count data not available — run build_viz.py';
+    }
+
     msg.textContent = 'Fetching boundary layers…';
-    const [stResp, facResp] = await Promise.allSettled([
+    const [stRes, facRes] = await Promise.allSettled([
       fetch('data/npfr_station_boundary.geojson'),
       fetch('data/CountyFacility.geojson'),
     ]);
-    STATION_GEO  = stResp.status  === 'fulfilled' && stResp.value.ok  ? await stResp.value.json()  : null;
-    FACILITY_GEO = facResp.status === 'fulfilled' && facResp.value.ok ? await facResp.value.json() : null;
+    STATION_GEO  = stRes.status  === 'fulfilled' && stRes.value.ok  ? await stRes.value.json()  : null;
+    FACILITY_GEO = facRes.status === 'fulfilled' && facRes.value.ok ? await facRes.value.json() : null;
 
   } catch (err) {
     document.getElementById('load-overlay').innerHTML =
       `<div style="font-family:monospace;font-size:13px;color:#ff6b6b;padding:40px;max-width:600px;text-align:center">
         <strong>Data load failed</strong><br><br>${err.message}<br><br>
-        <span style="color:#8888aa">Run build_viz.py to regenerate data/esz_profiles.json,
-        then serve via a local HTTP server (not file://).</span>
+        <span style="color:#8888aa">Run build_viz.py then serve via HTTP (not file://).</span>
       </div>`;
     return;
   }
 
-  // Remove overlay
   document.getElementById('load-overlay').remove();
 
-  // Synthetic badge
   if (SYNTHETIC) {
     document.getElementById('synthetic-badge').style.display = '';
-    console.warn('[NPFR] Running with SYNTHETIC data. Drop real data files into data_dir and re-run build_viz.py.');
+    console.warn('[NPFR] Running with SYNTHETIC data.');
   }
 
-  // Build station pills dynamically
   buildStationPills();
-
-  // Boot the map
+  buildProgTabs();
   renderStationLayers();
   renderChoropleth();
   showStationOverview('ALL');
   setTimeout(() => {
-    const allLayer = L.geoJSON(ESZ_GEOJSON);
-    const b = allLayer.getBounds();
+    const b = L.geoJSON(ESZ_GEOJSON).getBounds();
     if (b.isValid()) map.fitBounds(b, {padding:[30,30]});
   }, 80);
 }
 
-// ── STATION PILLS ──────────────────────────────────────────────────────────
+// ── BUILD PROG/RISK MAP from column names ─────────────────────────────────
+// Mirrors available_programs_risks() from render_riskmaps.py
+function buildProgRiskMap() {
+  if (!ESZ_COUNTS) return;
+  const RISK_SLUG  = { '1low':'1-Low','2moderate':'2-Moderate','3high':'3-High','4maximum':'4-Maximum' };
+  const PROG_NAMES = { ems:'EMS', fire:'Fire', hazmat:'Hazmat', rescue:'Rescue' };
+  const pat = /^([a-z]+)_(1low|2moderate|3high|4maximum)$/;
+  const result = {};
+
+  const sample = Object.values(ESZ_COUNTS)[0] || {};
+  for (const col of Object.keys(sample)) {
+    const m = pat.exec(col);
+    if (!m) continue;
+    const prog = PROG_NAMES[m[1]] || m[1];
+    const risk = RISK_SLUG[m[2]];
+    if (!result[prog]) result[prog] = [];
+    if (!result[prog].includes(risk)) result[prog].push(risk);
+  }
+  for (const p of Object.keys(result)) result[p].sort();
+  PROG_RISK_MAP = result;
+
+  const fy = Object.values(ESZ_COUNTS)[0]?.fy_range || '';
+  if (fy) document.getElementById('fy-badge').textContent = fy;
+}
+
+// ── STATION PILLS ─────────────────────────────────────────────────────────
 function buildStationPills() {
-  const container = document.getElementById('station-pills');
-  container.innerHTML =
+  document.getElementById('station-pills').innerHTML =
     '<button class="pill all active" data-station="ALL" onclick="filterStation(this)">All</button>'
     + STATIONS.map(s =>
         `<button class="pill" data-station="${s}" onclick="filterStation(this)">${s}</button>`
       ).join('');
 }
 
-// ── STATION BOUNDARIES ────────────────────────────────────────────────────
-let stationBoundaryLayer = null;
-let stationLabelLayer    = null;
+// ── PROGRAM & RISK TABS ───────────────────────────────────────────────────
+function buildProgTabs() {
+  document.getElementById('prog-tabs').innerHTML =
+    Object.keys(PROG_RISK_MAP).map(p =>
+      `<button class="prog-tab" data-prog="${p}" onclick="selectProgram('${p}')">${p}</button>`
+    ).join('');
+}
 
+function buildRiskTabs(program) {
+  document.getElementById('risk-tabs').innerHTML =
+    (PROG_RISK_MAP[program] || []).map(r =>
+      `<button class="risk-tab" data-risk="${r}" onclick="selectRisk('${r}')">${r}</button>`
+    ).join('');
+}
+
+// ── MODE SWITCHING ────────────────────────────────────────────────────────
+function setMode(mode) {
+  activeMode = mode;
+  const app = document.getElementById('app');
+  document.getElementById('mode-community').classList.toggle('active', mode === 'community');
+  document.getElementById('mode-incident').classList.toggle('active',  mode === 'incident');
+
+  if (mode === 'community') {
+    app.classList.remove('incident-mode');
+    activeProgram = null;
+    activeRisk    = null;
+    activeESZ     = null;
+    renderChoropleth();
+    showStationOverview(activeStation);
+  } else {
+    app.classList.add('incident-mode');
+    const progs = Object.keys(PROG_RISK_MAP);
+    if (progs.length && !activeProgram) {
+      selectProgram(progs[0]);  // → selectRisk → renderChoropleth
+    } else if (activeProgram) {
+      renderChoropleth();
+      showStationOverview(activeStation);
+    }
+  }
+}
+
+function selectProgram(program) {
+  activeProgram = program;
+  document.querySelectorAll('.prog-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.prog === program)
+  );
+  buildRiskTabs(program);
+  const risks = PROG_RISK_MAP[program] || [];
+  if (risks.length) selectRisk(risks[0]);
+}
+
+function selectRisk(risk) {
+  activeRisk = risk;
+  document.querySelectorAll('.risk-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.risk === risk)
+  );
+  activeESZ = null;
+  renderChoropleth();
+  showStationOverview(activeStation);
+}
+
+// ── STATION BOUNDARY LAYERS ───────────────────────────────────────────────
 function renderStationLayers() {
   if (stationBoundaryLayer) map.removeLayer(stationBoundaryLayer);
   if (stationLabelLayer)    map.removeLayer(stationLabelLayer);
 
-  if (STATION_GEO && STATION_GEO.features && STATION_GEO.features.length) {
+  if (STATION_GEO?.features?.length) {
     stationBoundaryLayer = L.geoJSON(STATION_GEO, {
-      style: () => ({ color:'#e0e0ff', weight:2, opacity:0.85, fillOpacity:0 }),
+      style: () => ({color:'#e0e0ff', weight:2, opacity:0.85, fillOpacity:0}),
       interactive: false,
     }).addTo(map);
   }
 
   const labelFeatures = [];
-  if (FACILITY_GEO && FACILITY_GEO.features) {
+  if (FACILITY_GEO?.features) {
     FACILITY_GEO.features.forEach(f => {
       const lbl = f.properties.cadlabel || f.properties.CadLabel || '';
       const num = parseInt(lbl);
-      if (num >= 81 && num <= 86) labelFeatures.push({ sid:'ST'+num, coords:f.geometry.coordinates });
+      if (num >= 81 && num <= 86)
+        labelFeatures.push({sid:'ST'+num, coords:f.geometry.coordinates});
     });
-  } else if (STATION_GEO && STATION_GEO.features) {
+  } else if (STATION_GEO?.features) {
     STATION_GEO.features.forEach(f => {
       const sid = f.properties.StationID || f.properties.station_id || '';
       if (!sid) return;
-      const coords = f.geometry.coordinates;
-      const flat  = coords.flat(10).filter((_,i)=>i%2===0);
-      const flatY = coords.flat(10).filter((_,i)=>i%2===1);
+      const flat  = f.geometry.coordinates.flat(10).filter((_,i)=>i%2===0);
+      const flatY = f.geometry.coordinates.flat(10).filter((_,i)=>i%2===1);
       if (!flat.length) return;
-      const cx = flat.reduce((a,b)=>a+b,0)/flat.length;
-      const cy = flatY.reduce((a,b)=>a+b,0)/flatY.length;
-      labelFeatures.push({ sid, coords:[cx,cy] });
+      labelFeatures.push({
+        sid,
+        coords:[
+          flat.reduce((a,b)=>a+b,0)/flat.length,
+          flatY.reduce((a,b)=>a+b,0)/flatY.length,
+        ]
+      });
     });
   }
 
   if (labelFeatures.length) {
-    const labelGroup = L.layerGroup();
+    const grp = L.layerGroup();
     labelFeatures.forEach(({sid, coords}) => {
       L.marker([coords[1], coords[0]], {
         icon: L.divIcon({
-          className: '',
-          html: '<div style="font-family:Barlow Condensed,sans-serif;font-size:20px;font-weight:700;'
-              + 'letter-spacing:.08em;color:#00cfff;'
-              + 'text-shadow:-2px -2px 0 #0a0a1a,2px -2px 0 #0a0a1a,-2px 2px 0 #0a0a1a,2px 2px 0 #0a0a1a;'
-              + 'white-space:nowrap;pointer-events:none;">' + sid + '</div>',
-          iconAnchor: [28, 10],
+          className:'',
+          html:`<div style="font-family:Barlow Condensed,sans-serif;font-size:20px;font-weight:700;`
+             + `letter-spacing:.08em;color:#00cfff;`
+             + `text-shadow:-2px -2px 0 #0a0a1a,2px -2px 0 #0a0a1a,-2px 2px 0 #0a0a1a,2px 2px 0 #0a0a1a;`
+             + `white-space:nowrap;pointer-events:none;">${sid}</div>`,
+          iconAnchor:[28,10],
         }),
-        interactive: false, zIndexOffset: 500,
-      }).addTo(labelGroup);
+        interactive:false, zIndexOffset:500,
+      }).addTo(grp);
     });
-    stationLabelLayer = labelGroup.addTo(map);
+    stationLabelLayer = grp.addTo(map);
   }
 }
 
-// ── CHOROPLETH ─────────────────────────────────────────────────────────────
+// ── COMMUNITY CHOROPLETH helpers ──────────────────────────────────────────
 const RAMPS = {
   yellow: ['#1a1400','#3d3000','#736000','#a88c00','#ddb800','#ffdd00'],
   fire:   ['#1a1400','#3d3000','#736000','#a88c00','#ddb800','#ffdd00'],
   blue:   ['#1a1400','#3d3000','#736000','#a88c00','#ddb800','#ffdd00'],
   orange: ['#1a1400','#3d3000','#736000','#a88c00','#ddb800','#ffdd00'],
 };
-
-function getValues(metric) {
-  return ESZ_GEOJSON.features
-    .map(f => parseFloat(f.properties[metric]))
-    .filter(v => !isNaN(v));
-}
-
-function quantileBreaks(vals, n) {
-  const sorted = [...vals].filter(v=>v>0).sort((a,b)=>a-b);
-  if (!sorted.length) return [0,0,0,0,0];
-  const breaks = [];
-  for (let i=1; i<n; i++) breaks.push(sorted[Math.floor(sorted.length * i/n)]);
-  return breaks;
-}
-
-function choroplethColor(val, breaks, ramp) {
-  const colors = RAMPS[ramp] || RAMPS.yellow;
-  if (val === undefined || val === null || val === '' || isNaN(parseFloat(val))) return colors[0];
-  const n = parseFloat(val);
-  if (n <= 0) return colors[0];
-  for (let i=0; i<breaks.length; i++) {
-    if (n <= breaks[i]) return colors[i+1];
-  }
-  return colors[colors.length-1];
-}
-
-function getRamp(metric) {
-  if (metric.includes('flood') || metric.includes('pct_flood')) return 'orange';
-  if (metric.includes('hydrant') || metric.includes('pop') || metric.includes('alf')) return 'blue';
-  return 'fire';
-}
-
-function buildLegend(breaks, ramp, metric) {
-  const colors = RAMPS[ramp] || RAMPS.yellow;
-  const labels = [
-    `Zero / no data`,
-    `< ${fmt(breaks[0], metric)}`,
-    `${fmt(breaks[0], metric)} – ${fmt(breaks[1], metric)}`,
-    `${fmt(breaks[1], metric)} – ${fmt(breaks[2], metric)}`,
-    `${fmt(breaks[2], metric)} – ${fmt(breaks[3], metric)}`,
-    `> ${fmt(breaks[3], metric)}`,
-  ];
-  document.getElementById('legend-title').textContent = metricLabel(metric);
-  document.getElementById('legend-rows').innerHTML = colors.map((c,i) =>
-    `<div class="legend-row"><div class="legend-swatch" style="background:${c}"></div><span>${labels[i]||''}</span></div>`
-  ).join('');
-}
-
-function metricLabel(m) {
-  const map = {
-    est_population:'Est. Population', pct_hydrant_1000ft:'Hydrant Coverage %',
-    pct_flood_ae:'Flood Zone AE %', sfr_units:'SFR Units',
-    multifamily_units:'Multifamily Units', mobile_units:'Mobile Home Units',
-    alf_units:'ALF Units', industrial_units:'Industrial Units',
-    sfr_pct:'SFR %', sfr_flood_pct:'SFR Flood %', industrial_flood_pct:'Industrial Flood %',
-    vacant_units:'Vacant Units', vacant_pct:'Vacant %',
-  };
-  return map[m] || m;
-}
 
 const PCT_METRICS = new Set([
   'pct_hydrant_1000ft','pct_flood_ae',
@@ -480,64 +611,233 @@ function fmt(v, metric) {
   if (metric && PCT_METRICS.has(metric)) return n.toFixed(1) + '%';
   return Math.round(n).toLocaleString();
 }
-
 function fmtPct(v) {
   if (v === undefined || v === null || v === '' || isNaN(parseFloat(v))) return '—';
   return parseFloat(v).toFixed(1) + '%';
 }
+function getRamp(metric) {
+  if (metric.includes('flood')) return 'orange';
+  if (metric.includes('hydrant') || metric.includes('pop') || metric.includes('alf')) return 'blue';
+  return 'fire';
+}
+function communityColor(val, breaks, ramp) {
+  const colors = RAMPS[ramp] || RAMPS.yellow;
+  if (val === undefined || val === null || val === '' || isNaN(parseFloat(val))) return colors[0];
+  const n = parseFloat(val);
+  if (n <= 0) return colors[0];
+  for (let i=0; i<breaks.length; i++) { if (n <= breaks[i]) return colors[i+1]; }
+  return colors[colors.length-1];
+}
+function quantileBreaks(vals, n) {
+  const sorted = [...vals].filter(v=>v>0).sort((a,b)=>a-b);
+  if (!sorted.length) return [0,0,0,0,0];
+  const breaks = [];
+  for (let i=1; i<n; i++) breaks.push(sorted[Math.floor(sorted.length * i/n)]);
+  return breaks;
+}
+function metricLabel(m) {
+  const labels = {
+    est_population:'Est. Population', pct_hydrant_1000ft:'Hydrant Coverage %',
+    pct_flood_ae:'Flood Zone AE %', sfr_units:'SFR Units',
+    multifamily_units:'Multifamily Units', mobile_units:'Mobile Home Units',
+    alf_units:'ALF Units', industrial_units:'Industrial Units',
+    sfr_pct:'SFR %', sfr_flood_pct:'SFR Flood %',
+    industrial_flood_pct:'Industrial Flood %',
+    vacant_units:'Vacant Units', vacant_pct:'Vacant %',
+  };
+  return labels[m] || m;
+}
 
+// ── INCIDENT CHOROPLETH helpers ───────────────────────────────────────────
+// Mirrors _compute_cuts() and _build_band_colors() from render_riskmaps.py
+
+function incidentCol(program, risk) {
+  return `${program.toLowerCase()}_${risk.toLowerCase().replace('-','').replace(' ','')}`;
+}
+
+function computeEqualWidthCuts(counts, nBands) {
+  const maxVal = Math.max(...counts.filter(v=>v>0), 0);
+  if (maxVal === 0) return [0, 1];
+  const step = maxVal / nBands;
+  const raw  = Array.from({length:nBands}, (_,i) => Math.round(step * i));
+  raw.push(maxVal + 1);
+  const deduped = [raw[0]];
+  for (const c of raw.slice(1)) { if (c > deduped[deduped.length-1]) deduped.push(c); }
+  return deduped;
+}
+
+function lerpHex(dark, neon, t) {
+  const d = parseInt(dark.slice(1),16), n = parseInt(neon.slice(1),16);
+  const dr=(d>>16)&255, dg=(d>>8)&255, db=d&255;
+  const nr=(n>>16)&255, ng=(n>>8)&255, nb=n&255;
+  const r=Math.round(dr+(nr-dr)*t), g=Math.round(dg+(ng-dg)*t), b=Math.round(db+(nb-db)*t);
+  return '#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('');
+}
+
+function buildBandColors(risk, nBands) {
+  // Index 0 = zero band (deep navy); indices 1..nBands = dim→neon
+  const dark = RISK_DARK[risk] || '#001020';
+  const neon = RISK_NEON[risk] || '#00cfff';
+  const colors = [ZERO_BAND_COLOR];
+  for (let i=0; i<nBands; i++) {
+    const t = 0.15 + 0.85 * (i / Math.max(nBands-1, 1));
+    colors.push(lerpHex(dark, neon, t));
+  }
+  return colors;
+}
+
+function incidentColor(count, cuts, bandColors) {
+  if (!count || isNaN(count) || count <= 0) return ZERO_BAND_COLOR;
+  for (let i=0; i<cuts.length-1; i++) {
+    if (count >= cuts[i] && count < cuts[i+1])
+      return bandColors[i+1] || bandColors[bandColors.length-1];
+  }
+  return bandColors[bandColors.length-1];
+}
+
+// ── LEGENDS ───────────────────────────────────────────────────────────────
+function buildCommunityLegend(breaks, ramp, metric) {
+  const colors = RAMPS[ramp] || RAMPS.yellow;
+  const labels = [
+    'Zero / no data',
+    `< ${fmt(breaks[0], metric)}`,
+    `${fmt(breaks[0], metric)} – ${fmt(breaks[1], metric)}`,
+    `${fmt(breaks[1], metric)} – ${fmt(breaks[2], metric)}`,
+    `${fmt(breaks[2], metric)} – ${fmt(breaks[3], metric)}`,
+    `> ${fmt(breaks[3], metric)}`,
+  ];
+  document.getElementById('legend-title').textContent = metricLabel(metric);
+  document.getElementById('legend-rows').innerHTML = colors.map((c,i) =>
+    `<div class="legend-row"><div class="legend-swatch" style="background:${c}"></div><span>${labels[i]||''}</span></div>`
+  ).join('');
+}
+
+function buildIncidentLegend(cuts, bandColors, program, risk) {
+  const neon = RISK_NEON[risk] || '#00cfff';
+  document.getElementById('legend-title').innerHTML =
+    `<span style="color:${PROG_COLORS[program]||'#fff'}">${program}</span>`
+    + `<span style="color:var(--muted)"> · </span>`
+    + `<span style="color:${neon}">${risk}</span>`;
+  const rows = [
+    `<div class="legend-row"><div class="legend-swatch" style="background:${ZERO_BAND_COLOR}"></div><span>No Incidents</span></div>`
+  ];
+  const nActive = cuts.length - 1;
+  for (let i=0; i<nActive; i++) {
+    const lo = cuts[i].toLocaleString();
+    const hi = i === nActive-1 ? '∞' : (cuts[i+1]-1).toLocaleString();
+    rows.push(
+      `<div class="legend-row"><div class="legend-swatch" style="background:${bandColors[i+1]||bandColors[bandColors.length-1]}"></div>`
+      + `<span>${lo} – ${hi}</span></div>`
+    );
+  }
+  document.getElementById('legend-rows').innerHTML = rows.join('');
+}
+
+// ── CHOROPLETH DISPATCHER ─────────────────────────────────────────────────
 function renderChoropleth() {
   if (choroplethLayer) map.removeLayer(choroplethLayer);
+  activeMode === 'community' ? renderCommunityChoropleth() : renderIncidentChoropleth();
+}
+
+function renderCommunityChoropleth() {
   const metric = currentMetric;
   const ramp   = getRamp(metric);
-  const vals   = getValues(metric);
+  const vals   = ESZ_GEOJSON.features.map(f=>parseFloat(f.properties[metric])).filter(v=>!isNaN(v));
   const breaks = quantileBreaks(vals, 5);
+  const fc     = activeStation === 'ALL' ? ESZ_GEOJSON
+    : {...ESZ_GEOJSON, features: ESZ_GEOJSON.features.filter(f=>f.properties.StationID===activeStation)};
 
-  const filtered = activeStation === 'ALL'
-    ? ESZ_GEOJSON
-    : { ...ESZ_GEOJSON, features: ESZ_GEOJSON.features.filter(f=>f.properties.StationID===activeStation) };
-
-  choroplethLayer = L.geoJSON(filtered, {
+  choroplethLayer = L.geoJSON(fc, {
     style: feat => ({
-      fillColor:   choroplethColor(parseFloat(feat.properties[metric]), breaks, ramp),
-      fillOpacity: 0.75,
-      color:       '#ffffff',
-      weight:      0.5,
-      opacity:     0.3,
+      fillColor:   communityColor(parseFloat(feat.properties[metric]), breaks, ramp),
+      fillOpacity: 0.75, color:'#ffffff', weight:0.5, opacity:0.3,
     }),
     onEachFeature: (feat, layer) => {
       layer.on({
-        mouseover: e => { e.target.setStyle({ weight:1.5, opacity:0.8, fillOpacity:0.9 }); e.target.bringToFront(); },
-        mouseout:  e => {
+        mouseover: e => {
+          if (!windowFocused) return;
+          e.target.setStyle({weight:1.5, opacity:0.8, fillOpacity:0.9});
+          e.target.bringToFront();
+        },
+        mouseout: e => {
           choroplethLayer.resetStyle(e.target);
-          if (activeESZ && feat.properties.ESZ_ID === activeESZ) {
-            e.target.setStyle({ weight:2, color:'#fff', opacity:1 });
-          }
+          if (activeESZ && feat.properties.ESZ_ID === activeESZ)
+            e.target.setStyle({weight:2, color:'#fff', opacity:1});
         },
         click: () => selectESZ(feat.properties),
       });
       layer.bindTooltip(
         `<b>${feat.properties.ESZ_ID}</b><br>${metricLabel(metric)}: ${fmt(feat.properties[metric], metric)}`,
-        { sticky:true, opacity:0.9, className:'esz-tip' }
+        {sticky:true, opacity:0.9, className:'esz-tip'}
       );
     }
   }).addTo(map);
 
-  buildLegend(breaks, ramp, metric);
+  buildCommunityLegend(breaks, ramp, metric);
 }
 
-// ── SIDEBAR: STATION VIEW ──────────────────────────────────────────────────
+function renderIncidentChoropleth() {
+  if (!ESZ_COUNTS || !activeProgram || !activeRisk) return;
+
+  const col    = incidentCol(activeProgram, activeRisk);
+  const counts = ESZ_GEOJSON.features.map(f => {
+    const e = ESZ_COUNTS[f.properties.ESZ_ID];
+    return e ? (parseInt(e[col]) || 0) : 0;
+  });
+  const cuts       = computeEqualWidthCuts(counts, N_BANDS);
+  const bandColors = buildBandColors(activeRisk, N_BANDS);
+  const fc = activeStation === 'ALL' ? ESZ_GEOJSON
+    : {...ESZ_GEOJSON, features: ESZ_GEOJSON.features.filter(f=>f.properties.StationID===activeStation)};
+
+  choroplethLayer = L.geoJSON(fc, {
+    style: feat => {
+      const e     = ESZ_COUNTS[feat.properties.ESZ_ID];
+      const count = e ? (parseInt(e[col]) || 0) : 0;
+      return {
+        fillColor:   incidentColor(count, cuts, bandColors),
+        fillOpacity: 0.80, color:'#ffffff', weight:0.5, opacity:0.3,
+      };
+    },
+    onEachFeature: (feat, layer) => {
+      const e     = ESZ_COUNTS[feat.properties.ESZ_ID];
+      const count = e ? (parseInt(e[col]) || 0) : 0;
+      layer.on({
+        mouseover: ev => {
+          if (!windowFocused) return;
+          ev.target.setStyle({weight:1.5, opacity:0.8, fillOpacity:0.95});
+          ev.target.bringToFront();
+        },
+        mouseout: ev => {
+          choroplethLayer.resetStyle(ev.target);
+          if (activeESZ && feat.properties.ESZ_ID === activeESZ)
+            ev.target.setStyle({weight:2, color:'#fff', opacity:1});
+        },
+        click: () => selectESZIncident(feat.properties, count),
+      });
+      layer.bindTooltip(
+        `<b>${feat.properties.ESZ_ID}</b><br>${activeProgram} ${activeRisk}: ${count.toLocaleString()} incidents`,
+        {sticky:true, opacity:0.9, className:'esz-tip'}
+      );
+    }
+  }).addTo(map);
+
+  buildIncidentLegend(cuts, bandColors, activeProgram, activeRisk);
+}
+
+// ── SIDEBAR: STATION OVERVIEW ─────────────────────────────────────────────
 function showStationOverview(sid) {
   const s = STATION_SUMS[sid];
   document.getElementById('sidebar-title').textContent = sid === 'ALL' ? 'All Stations' : `Station ${sid}`;
   document.getElementById('sidebar-sub').textContent = sid === 'ALL'
     ? `${Object.values(STATION_SUMS).reduce((a,b)=>a+b.esz_count,0)} ESZs · Click a polygon for profile`
-    : `${s.esz_count} ESZs · Click a polygon for profile`;
+    : `${s?.esz_count ?? 0} ESZs · Click a polygon for profile`;
+
+  if (activeMode === 'incident') { showIncidentStationOverview(sid); return; }
 
   const stations = sid === 'ALL' ? Object.values(STATION_SUMS) : [s];
-  const totPop   = stations.reduce((a,st)=>a+st.est_population,0);
-  const totUnits = stations.reduce((a,st)=>a+st.total_units,0);
-  const totEszs  = stations.reduce((a,st)=>a+st.esz_count,0);
+  const totPop   = stations.reduce((a,st)=>a+(st?.est_population||0),0);
+  const totUnits = stations.reduce((a,st)=>a+(st?.total_units||0),0);
+  const totEszs  = stations.reduce((a,st)=>a+(st?.esz_count||0),0);
 
   document.getElementById('sidebar-body').innerHTML = `
     <div class="sec-hdr">Jurisdiction Summary</div>
@@ -563,7 +863,61 @@ function showStationOverview(sid) {
   `;
 }
 
-// ── SIDEBAR: ESZ DETAIL ────────────────────────────────────────────────────
+function showIncidentStationOverview(sid) {
+  if (!ESZ_COUNTS || !activeProgram || !activeRisk) return;
+  const col   = incidentCol(activeProgram, activeRisk);
+  const neon  = RISK_NEON[activeRisk] || '#00cfff';
+  const pCol  = PROG_COLORS[activeProgram] || '#fff';
+
+  // Aggregate per-station from ESZ_COUNTS, using ESZ_GEOJSON to resolve station
+  const stTotals = {};
+  for (const [eszId, entry] of Object.entries(ESZ_COUNTS)) {
+    const feat = ESZ_GEOJSON.features.find(f=>f.properties.ESZ_ID === eszId);
+    if (!feat) continue;
+    const st = feat.properties.StationID || feat.properties.station_id;
+    if (!st) continue;
+    if (!stTotals[st]) stTotals[st] = {incidents:0, esz_count:0, esz_with_incidents:0};
+    const count = parseInt(entry[col]) || 0;
+    stTotals[st].incidents += count;
+    stTotals[st].esz_count += 1;
+    if (count > 0) stTotals[st].esz_with_incidents += 1;
+  }
+
+  const stList = (sid === 'ALL'
+    ? Object.entries(stTotals).sort((a,b)=>b[1].incidents-a[1].incidents)
+    : Object.entries(stTotals).filter(([s])=>s===sid)
+  );
+
+  const grandTotal = stList.reduce((a,[,v])=>a+v.incidents,0);
+
+  document.getElementById('sidebar-body').innerHTML = `
+    <div class="sec-hdr" style="color:${neon}">
+      <span style="color:${pCol}">${activeProgram}</span>&nbsp;·&nbsp;${activeRisk} Risk
+    </div>
+    <table class="kv-table">
+      <tr><td>Total Incidents</td>
+          <td><span class="kv-val-lg" style="color:${neon}">${grandTotal.toLocaleString()}</span></td></tr>
+    </table>
+    <div class="sec-hdr">By Station</div>
+    ${stList.map(([st, d])=>`
+      <div class="incident-stat-card">
+        <div class="isc-head">
+          <span class="isc-prog" style="color:${STATION_COLORS[st]||'var(--accent)'}">${st}</span>
+          <span class="isc-risk" style="color:${neon};border:1px solid ${neon};background:${neon}18">${d.incidents.toLocaleString()} incidents</span>
+        </div>
+        <div class="isc-kv">
+          <div class="isc-kv-item"><div class="isc-kv-lbl">ESZs w/ incidents</div><div class="isc-kv-val">${d.esz_with_incidents} / ${d.esz_count}</div></div>
+          <div class="isc-kv-item"><div class="isc-kv-lbl">Avg per ESZ</div><div class="isc-kv-val">${d.esz_count ? (d.incidents/d.esz_count).toFixed(1) : '—'}</div></div>
+        </div>
+      </div>
+    `).join('')}
+    <div style="margin-top:8px;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;font-size:11px;color:var(--muted)">
+      Click any ESZ polygon to see its incident detail.
+    </div>
+  `;
+}
+
+// ── SIDEBAR: ESZ DETAIL (community) ──────────────────────────────────────
 function dqClass(flag) {
   if (!flag || flag==='OK') return 'dq-ok';
   if (flag==='REVIEW') return 'dq-review';
@@ -571,6 +925,13 @@ function dqClass(flag) {
 }
 
 function selectESZ(props) {
+  if (activeMode === 'incident') {
+    const e     = ESZ_COUNTS?.[props.ESZ_ID];
+    const count = e ? (parseInt(e[incidentCol(activeProgram, activeRisk)]) || 0) : 0;
+    selectESZIncident(props, count);
+    return;
+  }
+
   activeESZ = props.ESZ_ID;
   document.getElementById('sidebar-title').textContent = props.ESZ_ID;
   document.getElementById('sidebar-sub').textContent =
@@ -579,14 +940,14 @@ function selectESZ(props) {
   if (choroplethLayer) {
     choroplethLayer.eachLayer(l => {
       const p = l.feature.properties;
-      if (p.ESZ_ID === activeESZ) l.setStyle({ weight:2, color:'#fff', opacity:1 });
+      if (p.ESZ_ID === activeESZ) l.setStyle({weight:2, color:'#fff', opacity:1});
       else choroplethLayer.resetStyle(l);
     });
   }
 
   const totalUnits = CATEGORIES.reduce((s,c)=>s+(parseInt(props[c+'_units'])||0),0);
   const catCards = CATEGORIES.map(cat => {
-    const units = parseInt(props[cat+'_units'])||0;
+    const units  = parseInt(props[cat+'_units'])||0;
     const pctVal = parseFloat(props[cat+'_pct'])||0;
     const sqft   = parseInt(props[cat+'_grnd_sqft'])||0;
     const yr     = props[cat+'_avg_yrbl']||'—';
@@ -622,15 +983,13 @@ function selectESZ(props) {
     </table>
     <div class="sec-hdr">Coverage</div>
     <table class="kv-table">
-      <tr>
-        <td>Hydrant (1000 ft)</td>
+      <tr><td>Hydrant (1000 ft)</td>
         <td><div class="mini-bar-wrap">
           <div class="mini-bar-track"><div class="mini-bar-fill" style="width:${Math.min(parseFloat(props.pct_hydrant_1000ft)||0,100)}%;background:var(--accent)"></div></div>
           <span>${fmtPct(props.pct_hydrant_1000ft)}</span>
         </div></td>
       </tr>
-      <tr>
-        <td>Flood Zone AE</td>
+      <tr><td>Flood Zone AE</td>
         <td><div class="mini-bar-wrap">
           <div class="mini-bar-track"><div class="mini-bar-fill" style="width:${Math.min(parseFloat(props.pct_flood_ae)||0,100)}%;background:#E65100"></div></div>
           <span>${fmtPct(props.pct_flood_ae)}</span>
@@ -646,19 +1005,76 @@ function selectESZ(props) {
   `;
 }
 
-// ── STATION FILTER ─────────────────────────────────────────────────────────
+// ── SIDEBAR: ESZ DETAIL (incident) ────────────────────────────────────────
+function selectESZIncident(props, count) {
+  activeESZ = props.ESZ_ID;
+  const neon = RISK_NEON[activeRisk] || '#00cfff';
+  const pCol = PROG_COLORS[activeProgram] || '#fff';
+
+  document.getElementById('sidebar-title').textContent = props.ESZ_ID;
+  document.getElementById('sidebar-sub').textContent =
+    `${props.StationID} · ${activeProgram} ${activeRisk}: ${count.toLocaleString()} incidents`;
+
+  if (choroplethLayer) {
+    choroplethLayer.eachLayer(l => {
+      if (l.feature.properties.ESZ_ID === activeESZ) l.setStyle({weight:2, color:'#fff', opacity:1});
+      else choroplethLayer.resetStyle(l);
+    });
+  }
+
+  // All-program/risk breakdown for this ESZ
+  const entry = ESZ_COUNTS?.[props.ESZ_ID] || {};
+  const breakdownRows = Object.entries(PROG_RISK_MAP).map(([prog, risks]) => {
+    const progTotal = risks.reduce((s,r)=>s+(parseInt(entry[incidentCol(prog,r)])||0),0);
+    return `
+      <tr>
+        <td colspan="2" style="padding-top:8px;padding-bottom:2px">
+          <span style="font-family:var(--font-h);font-size:12px;font-weight:700;color:${PROG_COLORS[prog]||'#fff'};text-transform:uppercase;letter-spacing:.06em">${prog}</span>
+          <span style="font-size:11px;color:var(--muted);margin-left:6px">${progTotal.toLocaleString()} total</span>
+        </td>
+      </tr>
+      ${risks.map(r => {
+        const cnt = parseInt(entry[incidentCol(prog,r)]) || 0;
+        const rn  = RISK_NEON[r] || '#ccc';
+        return `<tr>
+          <td style="padding-left:10px;color:${rn}">${r}</td>
+          <td style="color:var(--text);font-weight:600;text-align:right">${cnt.toLocaleString()}</td>
+        </tr>`;
+      }).join('')}`;
+  }).join('');
+
+  document.getElementById('sidebar-body').innerHTML = `
+    <div class="sec-hdr" style="color:${neon}">
+      <span style="color:${pCol}">${activeProgram}</span>&nbsp;·&nbsp;${activeRisk} Risk
+    </div>
+    <table class="kv-table">
+      <tr><td>ESZ</td><td><span class="kv-val-lg">${props.ESZ_ID}</span></td></tr>
+      <tr><td>Station</td><td>${props.StationID}</td></tr>
+      <tr><td>${activeProgram} ${activeRisk}</td>
+          <td><span class="kv-val-lg" style="color:${neon}">${count.toLocaleString()}</span></td></tr>
+    </table>
+    <div class="sec-hdr">All Programs · This ESZ</div>
+    <table class="kv-table">${breakdownRows}</table>
+    <div class="action-row">
+      <button class="btn-sec" onclick="showStationOverview('${props.StationID}')">← ${props.StationID}</button>
+      <button class="btn-pri" onclick="exportPDF()">⬇ PDF · This ESZ</button>
+    </div>
+  `;
+}
+
+// ── STATION FILTER ────────────────────────────────────────────────────────
 function filterStation(el) {
   if (!el || !el.dataset) return;
   const sid = el.dataset.station;
   activeStation = sid;
-  activeESZ = null;
+  activeESZ     = null;
   document.querySelectorAll('.pill').forEach(p=>p.classList.remove('active'));
   el.classList.add('active');
   renderChoropleth();
   showStationOverview(sid);
   if (sid !== 'ALL') {
-    const feats = ESZ_GEOJSON.features.filter(f =>
-      (f.properties.StationID || f.properties.station_id) === sid
+    const feats = ESZ_GEOJSON.features.filter(f=>
+      (f.properties.StationID||f.properties.station_id) === sid
     );
     if (feats.length) {
       const b = L.geoJSON({type:'FeatureCollection', features:feats}).getBounds();
@@ -670,22 +1086,26 @@ function filterStation(el) {
   }
 }
 
-// ── METRIC CHANGE ──────────────────────────────────────────────────────────
+// ── METRIC CHANGE ─────────────────────────────────────────────────────────
 document.getElementById('metric-select').addEventListener('change', e => {
   currentMetric = e.target.value;
-  renderChoropleth();
-  if (activeESZ) {
-    const feat = ESZ_GEOJSON.features.find(f=>f.properties.ESZ_ID===activeESZ);
-    if (feat) selectESZ(feat.properties);
+  if (activeMode === 'community') {
+    renderChoropleth();
+    if (activeESZ) {
+      const feat = ESZ_GEOJSON.features.find(f=>f.properties.ESZ_ID===activeESZ);
+      if (feat) selectESZ(feat.properties);
+    }
   }
 });
 
-// ── EXPORT STUB ─────────────────────────────────────────────────────────────
+// ── EXPORT ────────────────────────────────────────────────────────────────
 function exportPDF() {
-  alert('PDF export will be handled by render_report.py (Playwright).\nCurrent view: Station=' + activeStation + ', ESZ=' + (activeESZ||'All'));
+  alert('PDF export will be handled by render_report.py (Playwright).\nMode: ' + activeMode
+    + (activeMode==='incident' ? `\nProgram: ${activeProgram}  Risk: ${activeRisk}` : '')
+    + '\nStation: ' + activeStation + '\nESZ: ' + (activeESZ||'All'));
 }
 
-// ── BOOT ───────────────────────────────────────────────────────────────────
+// ── BOOT ──────────────────────────────────────────────────────────────────
 init();
 </script>
 </body>

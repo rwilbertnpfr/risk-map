@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NPFR · ESZ Risk Profile Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700&family=Barlow:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<style>
+:root {
+  /* Program colors — per README */
+  --fire:    #B71C1C;
+  --ems:     #1565C0;
+  --hazmat:  #E65100;
+  --rescue:  #6A1B9A;
+  /* Station colors — per README */
+  --st81:    #D7263D;
+  --st82:    #F46036;
+  --st83:    #2E294E;
+  --st84:    #1B998B;
+  --st85:    #C5D86D;
+  --st86:    #6A4C93;
+  /* Dark theme — per README */
+  --bg:      #0d0d1a;
+  --bg2:     #13131f;
+  --bg3:     #1a1a2e;
+  --border:  #3a3a5c;
+  --border-a: rgba(58,58,92,0.6);
+  --text:    #e0e0ff;
+  --muted:   #8888aa;
+  --accent:  #00cfff;
+  --font-h:  'Barlow Condensed', sans-serif;
+  --font-b:  'Barlow', sans-serif;
+  --sidebar: 380px;
+  --header:  52px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font-b)}
+
+/* ── LAYOUT ── */
+#app{display:grid;grid-template-rows:var(--header) 1fr;grid-template-columns:1fr var(--sidebar);height:100vh;overflow:hidden}
+#header{grid-column:1/-1;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;padding:0 20px;z-index:1000}
+#map-wrap{position:relative;background:var(--bg)}
+#sidebar{background:var(--bg2);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+
+/* ── HEADER ── */
+.logo{font-family:var(--font-h);font-size:20px;font-weight:700;letter-spacing:.04em;color:var(--fire);white-space:nowrap}
+.logo span{color:var(--text);font-weight:400}
+.hdr-sep{width:1px;height:24px;background:var(--border)}
+.hdr-label{font-family:var(--font-h);font-size:13px;font-weight:500;letter-spacing:.06em;color:var(--muted);text-transform:uppercase}
+#metric-select{background:var(--bg3);border:1px solid var(--border);color:var(--text);font-family:var(--font-b);font-size:13px;padding:5px 10px;border-radius:4px;cursor:pointer;min-width:240px}
+#metric-select:focus{outline:1px solid var(--accent)}
+.station-pills{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.pill{font-family:var(--font-h);font-size:12px;font-weight:600;letter-spacing:.06em;padding:4px 10px;border-radius:3px;border:1px solid var(--border);color:var(--muted);background:transparent;cursor:pointer;transition:all .15s;text-transform:uppercase}
+.pill:hover,.pill.active{border-color:var(--fire);color:var(--text);background:rgba(192,0,0,.15)}
+.pill.all.active{border-color:var(--accent);background:rgba(74,158,255,.12);color:var(--text)}
+#export-btn{font-family:var(--font-h);font-size:13px;font-weight:600;letter-spacing:.06em;padding:6px 14px;border-radius:3px;border:1px solid var(--border);color:var(--text);background:var(--bg3);cursor:pointer;text-transform:uppercase;transition:all .15s;white-space:nowrap}
+#export-btn:hover{border-color:var(--accent);background:rgba(74,158,255,.1)}
+#synthetic-badge{font-family:var(--font-h);font-size:11px;font-weight:600;letter-spacing:.08em;padding:3px 8px;border-radius:2px;background:rgba(237,125,49,.15);border:1px solid var(--hazmat);color:var(--hazmat);text-transform:uppercase;display:none}
+
+/* ── MAP ── */
+#map{width:100%;height:100%}
+.leaflet-container{background:#0d0f14 !important}
+
+/* ── SIDEBAR ── */
+.sidebar-header{padding:16px 20px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
+.sidebar-title{font-family:var(--font-h);font-size:22px;font-weight:700;letter-spacing:.02em;line-height:1.1}
+.sidebar-sub{font-size:12px;color:var(--muted);margin-top:4px}
+.sidebar-body{flex:1;overflow-y:auto;overflow-x:hidden;padding:16px 16px}
+.sidebar-body::-webkit-scrollbar{width:4px}
+.sidebar-body::-webkit-scrollbar-track{background:transparent}
+.sidebar-body::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+/* ── SECTION HEADERS ── */
+.sec-hdr{font-family:var(--font-h);font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);padding:10px 0 6px;margin-top:4px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+.sec-hdr:first-child{padding-top:0;margin-top:0}
+.sec-hdr::after{content:'';flex:1;height:1px;background:var(--border)}
+
+/* ── VERTICAL KV TABLE ── */
+.kv-table{width:100%;border-collapse:collapse;margin-bottom:4px}
+.kv-table tr{border-bottom:1px solid rgba(58,58,92,0.25)}
+.kv-table tr:last-child{border-bottom:none}
+.kv-table td{padding:6px 0;vertical-align:middle;font-size:12px}
+.kv-table td:first-child{color:var(--muted);font-size:11px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;width:52%;padding-right:8px}
+.kv-table td:last-child{color:var(--text);font-weight:500;text-align:right}
+.kv-val-lg{font-family:var(--font-h);font-size:20px;font-weight:700;letter-spacing:.02em;line-height:1}
+.dq-ok{color:#4caf50;font-weight:700}
+.dq-review{color:var(--hazmat);font-weight:700}
+.dq-low{color:var(--fire);font-weight:700}
+
+/* ── MINI BAR ── */
+.mini-bar-wrap{display:flex;align-items:center;gap:6px;justify-content:flex-end}
+.mini-bar-track{height:5px;width:60px;background:rgba(58,58,92,0.5);border-radius:2px;flex-shrink:0}
+.mini-bar-fill{height:100%;border-radius:2px;transition:width .3s}
+
+/* ── CATEGORY CARDS ── */
+.cat-cards{display:flex;flex-direction:column;gap:6px}
+.cat-card{background:var(--bg3);border:1px solid rgba(58,58,92,0.5);border-radius:4px;padding:8px 10px}
+.cat-card-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+.cat-card-name{font-family:var(--font-h);font-size:14px;font-weight:600;letter-spacing:.04em;text-transform:capitalize}
+.cat-card-units{font-family:var(--font-h);font-size:13px;color:var(--muted)}
+.cat-card-body{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px}
+.cat-kv{font-size:11px;display:flex;flex-direction:column;gap:1px}
+.cat-kv-lbl{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+.cat-kv-val{color:var(--text);font-weight:500}
+.pct-bar-row{grid-column:1/-1;margin-top:4px}
+.pct-bar-track{height:4px;background:rgba(58,58,92,0.5);border-radius:2px}
+.pct-bar-fill{height:100%;border-radius:2px;background:#ddb800;transition:width .3s}
+
+/* ── STATION SUMMARY ── */
+.station-card{background:var(--bg3);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:4px;padding:10px 12px;margin-bottom:6px;cursor:pointer;transition:all .15s}
+.station-card:hover{border-color:var(--accent)}
+.sc-head{font-family:var(--font-h);font-size:18px;font-weight:700;letter-spacing:.04em;margin-bottom:6px}
+.sc-kv{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px}
+.sc-kv-item{font-size:11px}
+.sc-kv-lbl{color:var(--muted);text-transform:uppercase;letter-spacing:.04em;font-size:10px}
+.sc-kv-val{color:var(--text);font-weight:600;font-family:var(--font-h);font-size:14px}
+
+/* ── ACTION BUTTONS ── */
+.action-row{display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.btn-sec{font-family:var(--font-h);font-size:12px;font-weight:600;letter-spacing:.06em;padding:7px 14px;border-radius:3px;border:1px solid var(--border);color:var(--muted);background:var(--bg3);cursor:pointer;text-transform:uppercase;flex:1;transition:all .15s}
+.btn-sec:hover{border-color:var(--text);color:var(--text)}
+.btn-pri{font-family:var(--font-h);font-size:12px;font-weight:600;letter-spacing:.06em;padding:7px 14px;border-radius:3px;border:1px solid rgba(0,207,255,.3);color:var(--accent);background:rgba(0,207,255,.07);cursor:pointer;text-transform:uppercase;flex:1;transition:all .15s}
+.btn-pri:hover{background:rgba(0,207,255,.14)}
+
+/* ── LEGEND ── */
+#legend{position:absolute;bottom:24px;left:16px;z-index:900;background:rgba(13,15,20,.88);border:1px solid var(--border);border-radius:4px;padding:10px 14px;min-width:160px;backdrop-filter:blur(8px)}
+.legend-title{font-family:var(--font-h);font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.legend-row{display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:12px}
+.legend-swatch{width:14px;height:14px;border-radius:2px;flex-shrink:0}
+
+/* ── LOADING OVERLAY ── */
+#load-overlay{position:fixed;inset:0;z-index:9999;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;font-family:var(--font-h);letter-spacing:.06em}
+#load-overlay .load-title{font-size:22px;font-weight:700;color:var(--fire)}
+#load-overlay .load-msg{font-size:13px;color:var(--muted)}
+#load-overlay .load-spinner{width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── EMPTY STATE ── */
+.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:12px;color:var(--muted);text-align:center;padding:40px}
+.empty-icon{font-size:40px;opacity:.3}
+.empty-title{font-family:var(--font-h);font-size:18px;font-weight:600;letter-spacing:.04em;color:var(--text)}
+
+/* ── PRINT / PDF ── */
+@media print{
+  #app{display:block;height:auto}
+  #header{display:none}
+  #sidebar{display:none}
+  #map-wrap{height:100vh}
+}
+</style>
+</head>
+<body>
+
+<!-- Loading overlay — removed after data fetch completes -->
+<div id="load-overlay">
+  <div class="load-spinner"></div>
+  <div class="load-title">NPFR · ESZ Dashboard</div>
+  <div class="load-msg" id="load-msg">Loading data…</div>
+</div>
+
+<div id="app">
+  <header id="header">
+    <div class="logo">NPFR <span>· ESZ Dashboard</span></div>
+    <div class="hdr-sep"></div>
+    <span class="hdr-label">Metric</span>
+    <select id="metric-select">
+      <option value="est_population">Est. Population</option>
+      <option value="pct_hydrant_1000ft">Hydrant Coverage (%)</option>
+      <option value="pct_flood_ae">Flood Zone AE (%)</option>
+      <option value="sfr_units">SFR Units</option>
+      <option value="multifamily_units">Multifamily Units</option>
+      <option value="mobile_units">Mobile Home Units</option>
+      <option value="alf_units">ALF Units</option>
+      <option value="industrial_units">Industrial Units</option>
+      <option value="sfr_pct">SFR %</option>
+      <option value="sfr_flood_pct">SFR Flood %</option>
+      <option value="industrial_flood_pct">Industrial Flood %</option>
+      <option value="vacant_units">Vacant Units</option>
+      <option value="vacant_pct">Vacant %</option>
+    </select>
+    <div class="hdr-sep"></div>
+    <span class="hdr-label">Station</span>
+    <div class="station-pills" id="station-pills">
+      <!-- Populated after data load -->
+    </div>
+    <div class="hdr-sep"></div>
+    <button id="export-btn" onclick="exportPDF()">⬇ Export PDF</button>
+    <div id="synthetic-badge">Synthetic Data</div>
+  </header>
+
+  <div id="map-wrap">
+    <div id="map"></div>
+    <div id="legend">
+      <div class="legend-title" id="legend-title">Est. Population</div>
+      <div id="legend-rows"></div>
+    </div>
+  </div>
+
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-title" id="sidebar-title">Overview</div>
+      <div class="sidebar-sub" id="sidebar-sub">Click a station or ESZ polygon to explore</div>
+    </div>
+    <div class="sidebar-body" id="sidebar-body">
+      <div class="empty-state">
+        <div class="empty-icon">⬡</div>
+        <div class="empty-title">Select an ESZ</div>
+        <div>Click any polygon on the map to view its full risk profile, or use the station pills to filter.</div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+// ── ERROR HANDLER ──────────────────────────────────────────────────────────
+window.onerror = function(msg, src, ln, col, err) {
+  var el = document.getElementById('map');
+  if (!el) return false;
+  var stack = err && err.stack ? err.stack.split('\n').join('<br>') : '';
+  el.innerHTML = '<div style="padding:24px;font-family:monospace;font-size:13px;color:#ff6b6b;background:#1a0000;height:100%;overflow:auto;box-sizing:border-box">'
+    + '<strong>JS ERROR</strong><br><br>' + msg
+    + '<br>Line ' + ln + '  col ' + col
+    + '<br><br>' + stack + '</div>';
+  return false;
+};
+
+// ── RUNTIME DATA (populated by init()) ────────────────────────────────────
+let ESZ_GEOJSON  = null;
+let STATION_GEO  = null;
+let FACILITY_GEO = null;
+let STATION_SUMS = null;
+let CATEGORIES   = null;
+let STATIONS     = null;
+let SYNTHETIC    = false;
+
+const STATION_COLORS = {
+  ST81:'#D7263D', ST82:'#F46036', ST83:'#2E294E',
+  ST84:'#1B998B', ST85:'#C5D86D', ST86:'#6A4C93',
+};
+
+// ── STATE ──────────────────────────────────────────────────────────────────
+let activeStation = "ALL";
+let activeESZ     = null;
+let choroplethLayer = null;
+let currentMetric   = "est_population";
+
+// ── MAP (init before data so tiles load in parallel) ───────────────────────
+if (typeof L === "undefined") {
+  throw new Error("Leaflet failed to load — check internet connection.");
+}
+const map = L.map('map', {
+  center: [27.03, -82.38], zoom: 11,
+  zoomControl: false, attributionControl: false,
+});
+L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+let windowFocused = true;
+
+function closeAllTooltips() {
+  map.eachLayer(l => { if (l.getTooltip && l.getTooltip()) l.closeTooltip(); });
+}
+
+window.addEventListener('blur', () => {
+  windowFocused = false;
+  closeAllTooltips();
+});
+
+window.addEventListener('focus', () => {
+  windowFocused = true;
+});
+
+document.addEventListener('visibilitychange', closeAllTooltips);
+document.getElementById('map').addEventListener('mouseleave', closeAllTooltips);
+
+// ── DATA FETCH ─────────────────────────────────────────────────────────────
+async function init() {
+  const msg = document.getElementById('load-msg');
+  try {
+    msg.textContent = 'Fetching ESZ profiles…';
+    const [eszResp, sumsResp] = await Promise.all([
+      fetch('data/esz_profiles.json'),
+      fetch('data/esz_station_sums.json'),
+    ]);
+    if (!eszResp.ok)  throw new Error(`esz_profiles.json: HTTP ${eszResp.status}`);
+    if (!sumsResp.ok) throw new Error(`esz_station_sums.json: HTTP ${sumsResp.status}`);
+
+    msg.textContent = 'Parsing data…';
+    const [eszData, sumsData] = await Promise.all([eszResp.json(), sumsResp.json()]);
+
+    ESZ_GEOJSON  = eszData;
+    STATION_SUMS = sumsData;
+    CATEGORIES   = eszData.metadata?.categories || [];
+    STATIONS     = eszData.metadata?.stations   || [];
+    SYNTHETIC    = eszData.metadata?.synthetic  || false;
+
+    // Optional layers — non-fatal if absent
+    msg.textContent = 'Fetching boundary layers…';
+    const [stResp, facResp] = await Promise.allSettled([
+      fetch('data/npfr_station_boundary.geojson'),
+      fetch('data/CountyFacility.geojson'),
+    ]);
+    STATION_GEO  = stResp.status  === 'fulfilled' && stResp.value.ok  ? await stResp.value.json()  : null;
+    FACILITY_GEO = facResp.status === 'fulfilled' && facResp.value.ok ? await facResp.value.json() : null;
+
+  } catch (err) {
+    document.getElementById('load-overlay').innerHTML =
+      `<div style="font-family:monospace;font-size:13px;color:#ff6b6b;padding:40px;max-width:600px;text-align:center">
+        <strong>Data load failed</strong><br><br>${err.message}<br><br>
+        <span style="color:#8888aa">Run build_viz.py to regenerate data/esz_profiles.json,
+        then serve via a local HTTP server (not file://).</span>
+      </div>`;
+    return;
+  }
+
+  // Remove overlay
+  document.getElementById('load-overlay').remove();
+
+  // Synthetic badge
+  if (SYNTHETIC) {
+    document.getElementById('synthetic-badge').style.display = '';
+    console.warn('[NPFR] Running with SYNTHETIC data. Drop real data files into data_dir and re-run build_viz.py.');
+  }
+
+  // Build station pills dynamically
+  buildStationPills();
+
+  // Boot the map
+  renderStationLayers();
+  renderChoropleth();
+  showStationOverview('ALL');
+  setTimeout(() => {
+    const allLayer = L.geoJSON(ESZ_GEOJSON);
+    const b = allLayer.getBounds();
+    if (b.isValid()) map.fitBounds(b, {padding:[30,30]});
+  }, 80);
+}
+
+// ── STATION PILLS ──────────────────────────────────────────────────────────
+function buildStationPills() {
+  const container = document.getElementById('station-pills');
+  container.innerHTML =
+    '<button class="pill all active" data-station="ALL" onclick="filterStation(this)">All</button>'
+    + STATIONS.map(s =>
+        `<button class="pill" data-station="${s}" onclick="filterStation(this)">${s}</button>`
+      ).join('');
+}
+
+// ── STATION BOUNDARIES ────────────────────────────────────────────────────
+let stationBoundaryLayer = null;
+let stationLabelLayer    = null;
+
+function renderStationLayers() {
+  if (stationBoundaryLayer) map.removeLayer(stationBoundaryLayer);
+  if (stationLabelLayer)    map.removeLayer(stationLabelLayer);
+
+  if (STATION_GEO && STATION_GEO.features && STATION_GEO.features.length) {
+    stationBoundaryLayer = L.geoJSON(STATION_GEO, {
+      style: () => ({ color:'#e0e0ff', weight:2, opacity:0.85, fillOpacity:0 }),
+      interactive: false,
+    }).addTo(map);
+  }
+
+  const labelFeatures = [];
+  if (FACILITY_GEO && FACILITY_GEO.features) {
+    FACILITY_GEO.features.forEach(f => {
+      const lbl = f.properties.cadlabel || f.properties.CadLabel || '';
+      const num = parseInt(lbl);
+      if (num >= 81 && num <= 86) labelFeatures.push({ sid:'ST'+num, coords:f.geometry.coordinates });
+    });
+  } else if (STATION_GEO && STATION_GEO.features) {
+    STATION_GEO.features.forEach(f => {
+      const sid = f.properties.StationID || f.properties.station_id || '';
+      if (!sid) return;
+      const coords = f.geometry.coordinates;
+      const flat  = coords.flat(10).filter((_,i)=>i%2===0);
+      const flatY = coords.flat(10).filter((_,i)=>i%2===1);
+      if (!flat.length) return;
+      const cx = flat.reduce((a,b)=>a+b,0)/flat.length;
+      const cy = flatY.reduce((a,b)=>a+b,0)/flatY.length;
+      labelFeatures.push({ sid, coords:[cx,cy] });
+    });
+  }
+
+  if (labelFeatures.length) {
+    const labelGroup = L.layerGroup();
+    labelFeatures.forEach(({sid, coords}) => {
+      L.marker([coords[1], coords[0]], {
+        icon: L.divIcon({
+          className: '',
+          html: '<div style="font-family:Barlow Condensed,sans-serif;font-size:20px;font-weight:700;'
+              + 'letter-spacing:.08em;color:#00cfff;'
+              + 'text-shadow:-2px -2px 0 #0a0a1a,2px -2px 0 #0a0a1a,-2px 2px 0 #0a0a1a,2px 2px 0 #0a0a1a;'
+              + 'white-space:nowrap;pointer-events:none;">' + sid + '</div>',
+          iconAnchor: [28, 10],
+        }),
+        interactive: false, zIndexOffset: 500,
+      }).addTo(labelGroup);
+    });
+    stationLabelLayer = labelGroup.addTo(map);
+  }
+}
+
+// ── CHOROPLETH ─────────────────────────────────────────────────────────────
+const RAMPS = {
+  yellow: ['#1a1400','#3d3000','#736000','#a88c00','#ddb800','#ffdd00'],
+  fire:   ['#1a1400','#3d3000','#736000','#a88c00','#ddb800','#ffdd00'],
+  blue:   ['#1a1400','#3d3000','#736000','#a88c00','#ddb800','#ffdd00'],
+  orange: ['#1a1400','#3d3000','#736000','#a88c00','#ddb800','#ffdd00'],
+};
+
+function getValues(metric) {
+  return ESZ_GEOJSON.features
+    .map(f => parseFloat(f.properties[metric]))
+    .filter(v => !isNaN(v));
+}
+
+function quantileBreaks(vals, n) {
+  const sorted = [...vals].filter(v=>v>0).sort((a,b)=>a-b);
+  if (!sorted.length) return [0,0,0,0,0];
+  const breaks = [];
+  for (let i=1; i<n; i++) breaks.push(sorted[Math.floor(sorted.length * i/n)]);
+  return breaks;
+}
+
+function choroplethColor(val, breaks, ramp) {
+  const colors = RAMPS[ramp] || RAMPS.yellow;
+  if (val === undefined || val === null || val === '' || isNaN(parseFloat(val))) return colors[0];
+  const n = parseFloat(val);
+  if (n <= 0) return colors[0];
+  for (let i=0; i<breaks.length; i++) {
+    if (n <= breaks[i]) return colors[i+1];
+  }
+  return colors[colors.length-1];
+}
+
+function getRamp(metric) {
+  if (metric.includes('flood') || metric.includes('pct_flood')) return 'orange';
+  if (metric.includes('hydrant') || metric.includes('pop') || metric.includes('alf')) return 'blue';
+  return 'fire';
+}
+
+function buildLegend(breaks, ramp, metric) {
+  const colors = RAMPS[ramp] || RAMPS.yellow;
+  const labels = [
+    `Zero / no data`,
+    `< ${fmt(breaks[0], metric)}`,
+    `${fmt(breaks[0], metric)} – ${fmt(breaks[1], metric)}`,
+    `${fmt(breaks[1], metric)} – ${fmt(breaks[2], metric)}`,
+    `${fmt(breaks[2], metric)} – ${fmt(breaks[3], metric)}`,
+    `> ${fmt(breaks[3], metric)}`,
+  ];
+  document.getElementById('legend-title').textContent = metricLabel(metric);
+  document.getElementById('legend-rows').innerHTML = colors.map((c,i) =>
+    `<div class="legend-row"><div class="legend-swatch" style="background:${c}"></div><span>${labels[i]||''}</span></div>`
+  ).join('');
+}
+
+function metricLabel(m) {
+  const map = {
+    est_population:'Est. Population', pct_hydrant_1000ft:'Hydrant Coverage %',
+    pct_flood_ae:'Flood Zone AE %', sfr_units:'SFR Units',
+    multifamily_units:'Multifamily Units', mobile_units:'Mobile Home Units',
+    alf_units:'ALF Units', industrial_units:'Industrial Units',
+    sfr_pct:'SFR %', sfr_flood_pct:'SFR Flood %', industrial_flood_pct:'Industrial Flood %',
+    vacant_units:'Vacant Units', vacant_pct:'Vacant %',
+  };
+  return map[m] || m;
+}
+
+const PCT_METRICS = new Set([
+  'pct_hydrant_1000ft','pct_flood_ae',
+  'sfr_pct','mobile_pct','multifamily_pct','alf_pct','retail_pct',
+  'industrial_pct','institutional_pct','school_pct','government_pct','vacant_pct',
+  'sfr_hyd_pct','sfr_flood_pct','mobile_hyd_pct','mobile_flood_pct',
+  'multifamily_hyd_pct','multifamily_flood_pct','alf_hyd_pct','alf_flood_pct',
+  'retail_hyd_pct','retail_flood_pct','industrial_hyd_pct','industrial_flood_pct',
+  'institutional_hyd_pct','institutional_flood_pct','school_hyd_pct','school_flood_pct',
+  'government_hyd_pct','government_flood_pct','vacant_hyd_pct','vacant_flood_pct',
+]);
+
+function fmt(v, metric) {
+  if (v === undefined || v === null || v === '' || isNaN(parseFloat(v))) return '—';
+  const n = parseFloat(v);
+  if (metric && PCT_METRICS.has(metric)) return n.toFixed(1) + '%';
+  return Math.round(n).toLocaleString();
+}
+
+function fmtPct(v) {
+  if (v === undefined || v === null || v === '' || isNaN(parseFloat(v))) return '—';
+  return parseFloat(v).toFixed(1) + '%';
+}
+
+function renderChoropleth() {
+  if (choroplethLayer) map.removeLayer(choroplethLayer);
+  const metric = currentMetric;
+  const ramp   = getRamp(metric);
+  const vals   = getValues(metric);
+  const breaks = quantileBreaks(vals, 5);
+
+  const filtered = activeStation === 'ALL'
+    ? ESZ_GEOJSON
+    : { ...ESZ_GEOJSON, features: ESZ_GEOJSON.features.filter(f=>f.properties.StationID===activeStation) };
+
+  choroplethLayer = L.geoJSON(filtered, {
+    style: feat => ({
+      fillColor:   choroplethColor(parseFloat(feat.properties[metric]), breaks, ramp),
+      fillOpacity: 0.75,
+      color:       '#ffffff',
+      weight:      0.5,
+      opacity:     0.3,
+    }),
+    onEachFeature: (feat, layer) => {
+      layer.on({
+        mouseover: e => {
+          if (!windowFocused) return;
+          e.target.setStyle({ weight:1.5, opacity:0.8, fillOpacity:0.9 });
+          e.target.bringToFront();
+        },
+        mouseout:  e => {
+          choroplethLayer.resetStyle(e.target);
+          if (activeESZ && feat.properties.ESZ_ID === activeESZ) {
+            e.target.setStyle({ weight:2, color:'#fff', opacity:1 });
+          }
+        },
+        click: () => selectESZ(feat.properties),
+      });
+      layer.bindTooltip(
+        `<b>${feat.properties.ESZ_ID}</b><br>${metricLabel(metric)}: ${fmt(feat.properties[metric], metric)}`,
+        { sticky:true, opacity:0.9, className:'esz-tip' }
+      );
+    }
+  }).addTo(map);
+
+  buildLegend(breaks, ramp, metric);
+}
+
+// ── SIDEBAR: STATION VIEW ──────────────────────────────────────────────────
+function showStationOverview(sid) {
+  const s = STATION_SUMS[sid];
+  document.getElementById('sidebar-title').textContent = sid === 'ALL' ? 'All Stations' : `Station ${sid}`;
+  document.getElementById('sidebar-sub').textContent = sid === 'ALL'
+    ? `${Object.values(STATION_SUMS).reduce((a,b)=>a+b.esz_count,0)} ESZs · Click a polygon for profile`
+    : `${s.esz_count} ESZs · Click a polygon for profile`;
+
+  const stations = sid === 'ALL' ? Object.values(STATION_SUMS) : [s];
+  const totPop   = stations.reduce((a,st)=>a+st.est_population,0);
+  const totUnits = stations.reduce((a,st)=>a+st.total_units,0);
+  const totEszs  = stations.reduce((a,st)=>a+st.esz_count,0);
+
+  document.getElementById('sidebar-body').innerHTML = `
+    <div class="sec-hdr">Jurisdiction Summary</div>
+    <table class="kv-table">
+      <tr><td>Total ESZs</td><td>${totEszs.toLocaleString()}</td></tr>
+      <tr><td>Est. Population</td><td>${totPop.toLocaleString()}</td></tr>
+      <tr><td>Total Units</td><td>${totUnits.toLocaleString()}</td></tr>
+    </table>
+    <div class="sec-hdr">By Station</div>
+    ${stations.map(st=>`
+      <div class="station-card" onclick="filterStation(document.querySelector('[data-station=${st.StationID}]'))">
+        <div class="sc-head">${st.StationID}</div>
+        <div class="sc-kv">
+          <div class="sc-kv-item"><div class="sc-kv-lbl">ESZs</div><div class="sc-kv-val">${st.esz_count}</div></div>
+          <div class="sc-kv-item"><div class="sc-kv-lbl">Population</div><div class="sc-kv-val">${st.est_population.toLocaleString()}</div></div>
+          <div class="sc-kv-item"><div class="sc-kv-lbl">Units</div><div class="sc-kv-val">${st.total_units.toLocaleString()}</div></div>
+        </div>
+      </div>
+    `).join('')}
+    <div style="margin-top:8px;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;font-size:11px;color:var(--muted)">
+      Click a station card or any ESZ polygon to explore.
+    </div>
+  `;
+}
+
+// ── SIDEBAR: ESZ DETAIL ────────────────────────────────────────────────────
+function dqClass(flag) {
+  if (!flag || flag==='OK') return 'dq-ok';
+  if (flag==='REVIEW') return 'dq-review';
+  return 'dq-low';
+}
+
+function selectESZ(props) {
+  activeESZ = props.ESZ_ID;
+  document.getElementById('sidebar-title').textContent = props.ESZ_ID;
+  document.getElementById('sidebar-sub').textContent =
+    `${props.StationID} · ${metricLabel(currentMetric)}: ${fmt(props[currentMetric], currentMetric)}`;
+
+  if (choroplethLayer) {
+    choroplethLayer.eachLayer(l => {
+      const p = l.feature.properties;
+      if (p.ESZ_ID === activeESZ) l.setStyle({ weight:2, color:'#fff', opacity:1 });
+      else choroplethLayer.resetStyle(l);
+    });
+  }
+
+  const totalUnits = CATEGORIES.reduce((s,c)=>s+(parseInt(props[c+'_units'])||0),0);
+  const catCards = CATEGORIES.map(cat => {
+    const units = parseInt(props[cat+'_units'])||0;
+    const pctVal = parseFloat(props[cat+'_pct'])||0;
+    const sqft   = parseInt(props[cat+'_grnd_sqft'])||0;
+    const yr     = props[cat+'_avg_yrbl']||'—';
+    const hyd    = parseFloat(props[cat+'_hyd_pct'])||0;
+    const flood  = parseFloat(props[cat+'_flood_pct'])||0;
+    if (!units) return '';
+    return `<div class="cat-card">
+      <div class="cat-card-head">
+        <span class="cat-card-name">${cat}</span>
+        <span class="cat-card-units">${units.toLocaleString()} units</span>
+      </div>
+      <div class="cat-card-body">
+        <div class="cat-kv"><span class="cat-kv-lbl">Sq Ft</span><span class="cat-kv-val">${sqft>0?(sqft/1000).toFixed(0)+'k sqft':'—'}</span></div>
+        <div class="cat-kv"><span class="cat-kv-lbl">Avg Yr Built</span><span class="cat-kv-val">${yr}</span></div>
+        <div class="cat-kv"><span class="cat-kv-lbl">Hydrant Cvg</span><span class="cat-kv-val">${hyd.toFixed(1)}%</span></div>
+        <div class="cat-kv"><span class="cat-kv-lbl">Flood Zone</span><span class="cat-kv-val">${flood.toFixed(1)}%</span></div>
+        <div class="pct-bar-row">
+          <div class="pct-bar-track"><div class="pct-bar-fill" style="width:${Math.min(pctVal,100)}%"></div></div>
+          <span style="font-size:10px;color:var(--muted);margin-top:2px;display:block">${pctVal.toFixed(1)}% of mix</span>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('sidebar-body').innerHTML = `
+    <div class="sec-hdr">Overview</div>
+    <table class="kv-table">
+      <tr><td>ESZ</td><td><span class="kv-val-lg">${props.ESZ_ID}</span></td></tr>
+      <tr><td>Station</td><td><span class="kv-val-lg">${props.StationID}</span></td></tr>
+      <tr><td>Est. Population</td><td><span class="kv-val-lg">${fmt(props.est_population)}</span></td></tr>
+      <tr><td>Total Units</td><td>${totalUnits.toLocaleString()}</td></tr>
+      <tr><td>Data Quality</td><td class="${dqClass(props.data_quality_flag)}">${props.data_quality_flag||'OK'}</td></tr>
+    </table>
+    <div class="sec-hdr">Coverage</div>
+    <table class="kv-table">
+      <tr>
+        <td>Hydrant (1000 ft)</td>
+        <td><div class="mini-bar-wrap">
+          <div class="mini-bar-track"><div class="mini-bar-fill" style="width:${Math.min(parseFloat(props.pct_hydrant_1000ft)||0,100)}%;background:var(--accent)"></div></div>
+          <span>${fmtPct(props.pct_hydrant_1000ft)}</span>
+        </div></td>
+      </tr>
+      <tr>
+        <td>Flood Zone AE</td>
+        <td><div class="mini-bar-wrap">
+          <div class="mini-bar-track"><div class="mini-bar-fill" style="width:${Math.min(parseFloat(props.pct_flood_ae)||0,100)}%;background:#E65100"></div></div>
+          <span>${fmtPct(props.pct_flood_ae)}</span>
+        </div></td>
+      </tr>
+    </table>
+    <div class="sec-hdr">Category Breakdown</div>
+    <div class="cat-cards">${catCards}</div>
+    <div class="action-row">
+      <button class="btn-sec" onclick="showStationOverview('${props.StationID}')">← ${props.StationID}</button>
+      <button class="btn-pri" onclick="exportPDF()">⬇ PDF · This ESZ</button>
+    </div>
+  `;
+}
+
+// ── STATION FILTER ─────────────────────────────────────────────────────────
+function filterStation(el) {
+  if (!el || !el.dataset) return;
+  const sid = el.dataset.station;
+  activeStation = sid;
+  activeESZ = null;
+  document.querySelectorAll('.pill').forEach(p=>p.classList.remove('active'));
+  el.classList.add('active');
+  renderChoropleth();
+  showStationOverview(sid);
+  if (sid !== 'ALL') {
+    const feats = ESZ_GEOJSON.features.filter(f =>
+      (f.properties.StationID || f.properties.station_id) === sid
+    );
+    if (feats.length) {
+      const b = L.geoJSON({type:'FeatureCollection', features:feats}).getBounds();
+      if (b.isValid()) map.fitBounds(b, {padding:[30,30]});
+    }
+  } else {
+    const b = L.geoJSON(ESZ_GEOJSON).getBounds();
+    if (b.isValid()) map.fitBounds(b, {padding:[30,30]});
+  }
+}
+
+// ── METRIC CHANGE ──────────────────────────────────────────────────────────
+document.getElementById('metric-select').addEventListener('change', e => {
+  currentMetric = e.target.value;
+  renderChoropleth();
+  if (activeESZ) {
+    const feat = ESZ_GEOJSON.features.find(f=>f.properties.ESZ_ID===activeESZ);
+    if (feat) selectESZ(feat.properties);
+  }
+});
+
+// ── EXPORT STUB ─────────────────────────────────────────────────────────────
+function exportPDF() {
+  alert('PDF export will be handled by render_report.py (Playwright).\nCurrent view: Station=' + activeStation + ', ESZ=' + (activeESZ||'All'));
+}
+
+// ── BOOT ───────────────────────────────────────────────────────────────────
+init();
+</script>
+</body>
+</html>
