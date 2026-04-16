@@ -49,6 +49,33 @@ let choroplethLayer      = null;
 let stationBoundaryLayer = null;
 let stationLabelLayer    = null;
 
+// ── COVERAGE STATE ────────────────────────────────────────────────────────
+let DRIVE_TIME_GEO     = null;  // FeatureCollection — polygon isochrones
+let DRIVE_TIME_ROADS   = null;  // FeatureCollection — road LineString segments
+let ESZ_DRIVE_COV      = null;  // FeatureCollection — esz_drive_coverage.geojson
+let isochroneLayer     = null;  // Leaflet layer for coverage rendering
+let activeCovView      = 'road';     // 'road' | 'polygons' | 'esz'
+let activeCovSubType   = 'mph';      // 'mph' | 'drivetime'
+let activeCovMPH       = null;       // e.g. '25', '35', '45'
+let activeCovDriveTime = null;       // e.g. '4'
+
+// Speed MPH color palette
+const MPH_COLORS = {
+  '25': { fill:'#7b61ff', stroke:'#a084ff' },
+  '35': { fill:'#00cfff', stroke:'#33dfff' },
+  '45': { fill:'#ff8c00', stroke:'#ffad44' },
+};
+
+// Overlap count color ramp (1 station → 6+ stations)
+const OVERLAP_COLORS = [
+  '#39ff6e',  // 1 station  — green
+  '#00cfff',  // 2 stations — cyan
+  '#ff8c00',  // 3 stations — orange
+  '#ff2d55',  // 4 stations — red
+  '#bf5fff',  // 5 stations — purple
+  '#ffffff',  // 6+         — white
+];
+
 // ── MAP INIT ──────────────────────────────────────────────────────────────
 if (typeof L === 'undefined') throw new Error('Leaflet failed to load.');
 const map = L.map('map', {
@@ -108,12 +135,18 @@ async function init() {
     }
 
     msg.textContent = 'Fetching boundary layers…';
-    const [stRes, facRes] = await Promise.allSettled([
+    const [stRes, facRes, dtRes, dtRoadsRes, eszCovRes] = await Promise.allSettled([
       fetch('data/npfr_station_boundary.geojson'),
       fetch('data/CountyFacility.geojson'),
+      fetch('data/drive_time_isochrones.geojson'),
+      fetch('data/drive_time_roads.geojson'),
+      fetch('data/esz_drive_coverage.geojson'),
     ]);
-    STATION_GEO  = stRes.status  === 'fulfilled' && stRes.value.ok  ? await stRes.value.json()  : null;
-    FACILITY_GEO = facRes.status === 'fulfilled' && facRes.value.ok ? await facRes.value.json() : null;
+    STATION_GEO      = stRes.status      === 'fulfilled' && stRes.value.ok      ? await stRes.value.json()      : null;
+    FACILITY_GEO     = facRes.status     === 'fulfilled' && facRes.value.ok     ? await facRes.value.json()     : null;
+    DRIVE_TIME_GEO   = dtRes.status      === 'fulfilled' && dtRes.value.ok      ? await dtRes.value.json()      : null;
+    DRIVE_TIME_ROADS = dtRoadsRes.status === 'fulfilled' && dtRoadsRes.value.ok ? await dtRoadsRes.value.json() : null;
+    ESZ_DRIVE_COV    = eszCovRes.status  === 'fulfilled' && eszCovRes.value.ok  ? await eszCovRes.value.json()  : null;
 
   } catch (err) {
     document.getElementById('load-overlay').innerHTML =
@@ -197,23 +230,36 @@ function setMode(mode) {
   const app = document.getElementById('app');
   document.getElementById('mode-community').classList.toggle('active', mode === 'community');
   document.getElementById('mode-incident').classList.toggle('active',  mode === 'incident');
+  document.getElementById('mode-coverage').classList.toggle('active',  mode === 'coverage');
+
+  app.classList.toggle('incident-mode', mode === 'incident');
+  app.classList.toggle('coverage-mode',  mode === 'coverage');
 
   if (mode === 'community') {
-    app.classList.remove('incident-mode');
     activeProgram = null;
     activeRisk    = null;
     activeESZ     = null;
+    clearIsochroneLayer();
     renderChoropleth();
     showStationOverview(activeStation);
-  } else {
-    app.classList.add('incident-mode');
+  } else if (mode === 'incident') {
+    activeESZ = null;
+    clearIsochroneLayer();
     const progs = Object.keys(PROG_RISK_MAP);
     if (progs.length && !activeProgram) {
-      selectProgram(progs[0]);  // → selectRisk → renderChoropleth
+      selectProgram(progs[0]);
     } else if (activeProgram) {
       renderChoropleth();
       showStationOverview(activeStation);
     }
+  } else if (mode === 'coverage') {
+    activeProgram = null;
+    activeRisk    = null;
+    activeESZ     = null;
+    if (choroplethLayer) { map.removeLayer(choroplethLayer); choroplethLayer = null; }
+    buildCoverageSubheader();
+    renderCoverageLayer();
+    showCoverageOverview();
   }
 }
 
@@ -448,17 +494,28 @@ function incidentColor(count, cuts, bandColors) {
 function buildCommunityLegend(breaks, ramp, metric) {
   const colors = RAMPS[ramp] || RAMPS.yellow;
   const isYear = YEAR_METRICS.has(metric);
-  // For year metrics, breaks are already in age (years old) from renderCommunityChoropleth
-  // fmt() will display them as "X yrs old" but legend needs raw age values formatted simply
-  const fmtBreak = v => isYear ? Math.round(v) + ' yrs' : fmt(v, metric);
-  const labels = [
-    'Zero / no data',
-    `< ${fmtBreak(breaks[0])}`,
-    `${fmtBreak(breaks[0])} – ${fmtBreak(breaks[1])}`,
-    `${fmtBreak(breaks[1])} – ${fmtBreak(breaks[2])}`,
-    `${fmtBreak(breaks[2])} – ${fmtBreak(breaks[3])}`,
-    `> ${fmtBreak(breaks[3])}`,
-  ];
+  const isPct  = PCT_METRICS.has(metric);
+  let labels;
+  if (isPct) {
+    labels = [
+      'Zero / no data',
+      '0 – 20%',
+      '20 – 40%',
+      '40 – 60%',
+      '60 – 80%',
+      '80 – 100%',
+    ];
+  } else {
+    const fmtBreak = v => isYear ? Math.round(v) + ' yrs' : fmt(v, metric);
+    labels = [
+      'Zero / no data',
+      `< ${fmtBreak(breaks[0])}`,
+      `${fmtBreak(breaks[0])} – ${fmtBreak(breaks[1])}`,
+      `${fmtBreak(breaks[1])} – ${fmtBreak(breaks[2])}`,
+      `${fmtBreak(breaks[2])} – ${fmtBreak(breaks[3])}`,
+      `> ${fmtBreak(breaks[3])}`,
+    ];
+  }
   document.getElementById('legend-title').textContent = metricLabel(metric);
   document.getElementById('legend-rows').innerHTML = colors.map((c,i) =>
     `<div class="legend-row"><div class="legend-swatch" style="background:${c}"></div><span>${labels[i]||''}</span></div>`
@@ -488,10 +545,9 @@ function buildIncidentLegend(cuts, bandColors, program, risk) {
 
 // ── CHOROPLETH DISPATCHER ─────────────────────────────────────────────────
 function renderChoropleth() {
+  if (activeMode === 'coverage') return;
   if (choroplethLayer) map.removeLayer(choroplethLayer);
   activeMode === 'community' ? renderCommunityChoropleth() : renderIncidentChoropleth();
-  // Bring station boundary lines above the choropleth fill
-  // (markers in stationLabelLayer are always above vector layers in Leaflet — no action needed)
   if (stationBoundaryLayer) stationBoundaryLayer.bringToFront();
 }
 
@@ -499,15 +555,19 @@ function renderCommunityChoropleth() {
   const metric = currentMetric;
   const ramp   = getRamp(metric);
   const isYear = YEAR_METRICS.has(metric);
+  const isPct  = PCT_METRICS.has(metric);
 
-  // For year built metrics, invert so older (lower year) = higher score = brighter/redder
-  // Score = currentYear - builtYear, so a 1960 building scores higher than a 2020 building
   const CURRENT_YEAR = new Date().getFullYear();
   const rawVals = ESZ_GEOJSON.features
     .map(f => parseFloat(f.properties[metric]))
     .filter(v => !isNaN(v) && v > 0);
-  const vals   = isYear ? rawVals.map(v => CURRENT_YEAR - v) : rawVals;
-  const breaks = isYear ? equalWidthBreaks(vals, 5) : quantileBreaks(vals, 5);
+  const vals = isYear ? rawVals.map(v => CURRENT_YEAR - v) : rawVals;
+
+  // For percentage metrics use fixed 0–100 bands so 100% always = brightest color.
+  // For year/count metrics use quantile (skew-resistant) or equal-width breaks.
+  const breaks = isPct  ? [20, 40, 60, 80]
+               : isYear ? equalWidthBreaks(vals, 5)
+               :          quantileBreaks(vals, 5);
 
   const fc = activeStation === 'ALL' ? ESZ_GEOJSON
     : {...ESZ_GEOJSON, features: ESZ_GEOJSON.features.filter(f=>f.properties.StationID===activeStation)};
@@ -518,28 +578,21 @@ function renderCommunityChoropleth() {
       const val = isYear ? (CURRENT_YEAR - raw) : raw;
       return {
         fillColor:   communityColor(val, breaks, ramp),
-        fillOpacity: 0.75, color:'#ffffff', weight:0.5, opacity:0.3,
+        fillOpacity: 1.0, color:'#ffffff', weight:0.5, opacity:0.3,
       };
     },
     onEachFeature: (feat, layer) => {
       layer.on({
         mouseover: e => {
           if (!windowFocused) return;
-          e.target.setStyle({weight:1.5, opacity:0.8, fillOpacity:0.9});
+          e.target.setStyle({weight:2, color:'#ffffff', opacity:1});
           e.target.bringToFront();
         },
         mouseout: e => {
           const isActive = activeESZ && feat.properties.ESZ_ID === activeESZ;
           e.target.setStyle(isActive
-            ? {weight:2, color:'#fff', opacity:1, fillOpacity:0.75}
-            : {
-                weight:0.5, color:'#ffffff', opacity:0.3,
-                fillOpacity:0.75,
-                fillColor: communityColor(
-                  isYear ? (CURRENT_YEAR - parseFloat(feat.properties[metric])) : parseFloat(feat.properties[metric]),
-                  breaks, ramp
-                ),
-              }
+            ? {weight:2, color:'#fff', opacity:1}
+            : {weight:0.5, color:'#ffffff', opacity:0.3}
           );
         },
         click: () => selectESZ(feat.properties),
@@ -573,7 +626,7 @@ function renderIncidentChoropleth() {
       const count = e ? (parseInt(e[col]) || 0) : 0;
       return {
         fillColor:   incidentColor(count, cuts, bandColors),
-        fillOpacity: 0.80, color:'#ffffff', weight:0.5, opacity:0.3,
+        fillOpacity: 1.0, color:'#ffffff', weight:0.5, opacity:0.3,
       };
     },
     onEachFeature: (feat, layer) => {
@@ -582,18 +635,14 @@ function renderIncidentChoropleth() {
       layer.on({
         mouseover: ev => {
           if (!windowFocused) return;
-          ev.target.setStyle({weight:1.5, opacity:0.8, fillOpacity:0.95});
+          ev.target.setStyle({weight:2, color:'#ffffff', opacity:1});
           ev.target.bringToFront();
         },
         mouseout: ev => {
           const isActive = activeESZ && feat.properties.ESZ_ID === activeESZ;
           ev.target.setStyle(isActive
-            ? {weight:2, color:'#fff', opacity:1, fillOpacity:0.80}
-            : {
-                weight:0.5, color:'#ffffff', opacity:0.3,
-                fillOpacity:0.80,
-                fillColor: incidentColor(count, cuts, bandColors),
-              }
+            ? {weight:2, color:'#fff', opacity:1}
+            : {weight:0.5, color:'#ffffff', opacity:0.3}
           );
         },
         click: () => selectESZIncident(feat.properties, count),
@@ -617,6 +666,7 @@ function showStationOverview(sid) {
     : `${s?.esz_count ?? 0} ESZs · Click a polygon for profile`;
 
   if (activeMode === 'incident') { showIncidentStationOverview(sid); return; }
+  if (activeMode === 'coverage') { showCoverageOverview(); return; }
 
   const stations = sid === 'ALL' ? Object.values(STATION_SUMS) : [s];
   const totPop   = stations.reduce((a,st)=>a+(st?.est_population||0),0);
@@ -723,18 +773,21 @@ function selectESZ(props) {
     const metric = currentMetric;
     const ramp   = getRamp(metric);
     const isYear = YEAR_METRICS.has(metric);
+    const isPct  = PCT_METRICS.has(metric);
     const CURRENT_YEAR = new Date().getFullYear();
     const rawVals = ESZ_GEOJSON.features.map(f=>parseFloat(f.properties[metric])).filter(v=>!isNaN(v)&&v>0);
     const vals   = isYear ? rawVals.map(v=>CURRENT_YEAR-v) : rawVals;
-    const breaks = isYear ? equalWidthBreaks(vals,5) : quantileBreaks(vals,5);
+    const breaks = isPct  ? [20, 40, 60, 80]
+                 : isYear ? equalWidthBreaks(vals,5)
+                 :          quantileBreaks(vals,5);
     choroplethLayer.eachLayer(l => {
       const p = l.feature.properties;
       const isActive = p.ESZ_ID === activeESZ;
       const raw = parseFloat(p[metric]);
       const val = isYear ? (CURRENT_YEAR - raw) : raw;
       l.setStyle(isActive
-        ? {weight:2, color:'#fff', opacity:1, fillOpacity:0.75, fillColor: communityColor(val, breaks, ramp)}
-        : {weight:0.5, color:'#ffffff', opacity:0.3, fillOpacity:0.75, fillColor: communityColor(val, breaks, ramp)}
+        ? {weight:2, color:'#fff', opacity:1, fillOpacity:1.0, fillColor: communityColor(val, breaks, ramp)}
+        : {weight:0.5, color:'#ffffff', opacity:0.3, fillOpacity:1.0, fillColor: communityColor(val, breaks, ramp)}
       );
       if (isActive) l.bringToFront();
     });
@@ -827,7 +880,7 @@ function selectESZIncident(props, count) {
         weight:      isActive ? 2 : 0.5,
         color:       '#ffffff',
         opacity:     isActive ? 1 : 0.3,
-        fillOpacity: 0.80,
+        fillOpacity: 1.0,
         fillColor:   incidentColor(cnt, cuts, bandColors),
       });
       if (isActive) l.bringToFront();
@@ -881,6 +934,25 @@ function filterStation(el) {
   activeESZ     = null;
   document.querySelectorAll('.pill').forEach(p=>p.classList.remove('active'));
   el.classList.add('active');
+
+  if (activeMode === 'coverage') {
+    activeCovMPH = null; // Reset so All/specific logic re-evaluates for new station context
+    buildCoverageSubTabs();
+    renderCoverageLayer();
+    showCoverageOverview();
+    if (sid !== 'ALL' && DRIVE_TIME_GEO) {
+      const feats = DRIVE_TIME_GEO.features.filter(f => f.properties.station_id === sid);
+      if (feats.length) {
+        const b = L.geoJSON({type:'FeatureCollection',features:feats}).getBounds();
+        if (b.isValid()) map.fitBounds(b, {padding:[30,30]});
+      }
+    } else if (ESZ_GEOJSON) {
+      const b = L.geoJSON(ESZ_GEOJSON).getBounds();
+      if (b.isValid()) map.fitBounds(b, {padding:[30,30]});
+    }
+    return;
+  }
+
   renderChoropleth();
   showStationOverview(sid);
   if (sid !== 'ALL') {
@@ -914,6 +986,758 @@ function exportPDF() {
   alert('PDF export will be handled by render_report.py (Playwright).\nMode: ' + activeMode
     + (activeMode==='incident' ? `\nProgram: ${activeProgram}  Risk: ${activeRisk}` : '')
     + '\nStation: ' + activeStation + '\nESZ: ' + (activeESZ||'All'));
+}
+
+// ── COVERAGE MODE ─────────────────────────────────────────────────────────
+
+function clearIsochroneLayer() {
+  if (isochroneLayer) { map.removeLayer(isochroneLayer); isochroneLayer = null; }
+}
+
+// Build the subheader for coverage: Road View | Polygons | ESZ View + sub-tabs
+function buildCoverageSubheader() {
+  document.getElementById('coverage-view-tabs').innerHTML =
+    [['road','Road View'],['polygons','Polygons'],['esz','ESZ View']].map(([v,label]) =>
+      `<button class="cov-view-tab${activeCovView===v?' active':''}" data-view="${v}"
+         onclick="selectCovView('${v}')">${label}</button>`
+    ).join('');
+  buildCoverageSubTabs();
+}
+
+function buildCoverageSubTabs() {
+  if (activeCovView === 'esz') {
+    // Discover available time+mph combos from ESZ coverage column names
+    // Columns: cov_{mph}mph_{min}min
+    const sample = ESZ_DRIVE_COV?.features?.[0]?.properties || {};
+    const covKeys = Object.keys(sample).filter(k => k.startsWith('cov_'));
+    const times  = [...new Set(covKeys.map(k => { const m=k.match(/_(\d+)min$/); return m?m[1]:null; }).filter(Boolean))].sort((a,b)=>+a-+b);
+    const speeds = [...new Set(covKeys.map(k => { const m=k.match(/cov_(\d+)mph/);  return m?m[1]:null; }).filter(Boolean))].sort((a,b)=>+a-+b);
+
+    if (!activeCovDriveTime || !times.includes(activeCovDriveTime)) activeCovDriveTime = times[0] || null;
+    if (!activeCovMPH       || activeCovMPH === 'ALL' || !speeds.includes(activeCovMPH)) activeCovMPH = speeds[0] || null;
+
+    const timeHtml  = times.map(t =>
+      `<button class="cov-sub-tab${activeCovDriveTime===t?' active':''}" onclick="selectCovDriveTime('${t}')">${t} min</button>`
+    ).join('');
+    const speedHtml = speeds.map(s =>
+      `<button class="cov-sub-tab${activeCovMPH===s?' active':''}" onclick="selectCovMPH('${s}')">${s} mph</button>`
+    ).join('');
+
+    document.getElementById('coverage-sub-tabs').innerHTML =
+      `<span class="cov-sub-label">Time</span><div class="cov-pill-group">${timeHtml}</div>`
+      + `<div class="cov-sub-sep"></div>`
+      + `<span class="cov-sub-label">MPH</span><div class="cov-pill-group">${speedHtml}</div>`;
+    return;
+  }
+
+  const allFeats = activeCovView === 'road'
+    ? (DRIVE_TIME_ROADS?.features || [])
+    : (DRIVE_TIME_GEO?.features   || []);
+
+  const times = [...new Set(allFeats.map(f => String(parseFloat(f.properties.minutes))))]
+    .filter(t => !isNaN(parseFloat(t))).sort((a,b) => parseFloat(a)-parseFloat(b));
+  if (!activeCovDriveTime && times.length) activeCovDriveTime = times[0];
+
+  const speeds = [...new Set(allFeats.map(f => String(parseFloat(f.properties.speed_mph))))]
+    .filter(s => !isNaN(parseFloat(s))).sort((a,b) => parseFloat(a)-parseFloat(b));
+  const offerAllMPH = activeCovView === 'polygons' && activeStation !== 'ALL';
+  if (!activeCovMPH || (activeCovMPH === 'ALL' && !offerAllMPH)) {
+    activeCovMPH = offerAllMPH ? 'ALL' : (speeds[0] || null);
+  }
+
+  const timeHtml = times.map(t =>
+    `<button class="cov-sub-tab${activeCovDriveTime===t?' active':''}"
+       onclick="selectCovDriveTime('${t}')">${t} min</button>`
+  ).join('');
+
+  const allMPHBtn = offerAllMPH
+    ? `<button class="cov-sub-tab cov-sub-tab-all${activeCovMPH==='ALL'?' active':''}"
+         onclick="selectCovMPH('ALL')">All</button>`
+    : '';
+  const speedHtml = allMPHBtn + speeds.map(s =>
+    `<button class="cov-sub-tab${activeCovMPH===s?' active':''}"
+       onclick="selectCovMPH('${s}')">${s} mph</button>`
+  ).join('');
+
+  document.getElementById('coverage-sub-tabs').innerHTML =
+    `<span class="cov-sub-label">Time</span>`
+    + `<div class="cov-pill-group">${timeHtml}</div>`
+    + `<div class="cov-sub-sep"></div>`
+    + `<span class="cov-sub-label">MPH</span>`
+    + `<div class="cov-pill-group">${speedHtml}</div>`;
+}
+
+function selectCovView(view) {
+  activeCovView = view;
+  // Reset MPH default when switching views so the All/specific logic re-evaluates
+  activeCovMPH = null;
+  document.querySelectorAll('.cov-view-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.view === view)
+  );
+  buildCoverageSubTabs();
+  renderCoverageLayer();
+  showCoverageOverview();
+}
+
+function selectCovMPH(mph) {
+  activeCovMPH = mph;
+  buildCoverageSubTabs();
+  renderCoverageLayer();
+  showCoverageOverview();
+}
+
+function selectCovDriveTime(dt) {
+  activeCovDriveTime = dt;
+  buildCoverageSubTabs();
+  renderCoverageLayer();
+  showCoverageOverview();
+}
+
+// ── COVERAGE RENDER DISPATCHER ────────────────────────────────────────────
+function renderCoverageLayer() {
+  clearIsochroneLayer();
+  if (choroplethLayer) { map.removeLayer(choroplethLayer); choroplethLayer = null; }
+
+  if      (activeCovView === 'esz')      renderCoverageESZ();
+  else if (activeCovView === 'polygons') renderCoveragePolygons();
+  else                                   renderCoverageRoads();
+}
+
+// ── ESZ VIEW ──────────────────────────────────────────────────────────────
+// Choropleth of ESZ polygons colored by cov_{mph}mph_{min}min (0→1 fraction).
+// Yellow ramp: dark at 0%, bright at 100%. One time + one MPH selected at a time.
+const ESZ_COV_RAMP = [
+  '#1a1400','#3d3000','#736000','#a88c00','#ddb800','#ffdd00',
+];
+
+function eszCovKey() {
+  return `cov_${activeCovMPH}mph_${activeCovDriveTime}min`;
+}
+
+function eszCovColor(fraction) {
+  if (fraction === null || fraction === undefined || isNaN(fraction)) return ESZ_COV_RAMP[0];
+  // Map 0–1 onto 6 ramp stops
+  const idx = fraction <= 0 ? 0 : Math.min(Math.floor(fraction * (ESZ_COV_RAMP.length - 1) + 0.5), ESZ_COV_RAMP.length - 1);
+  // Smooth: lerp between two adjacent stops
+  const scaled = fraction * (ESZ_COV_RAMP.length - 1);
+  const lo = Math.floor(scaled), hi = Math.min(lo + 1, ESZ_COV_RAMP.length - 1);
+  const t  = scaled - lo;
+  return lerpHex(ESZ_COV_RAMP[lo], ESZ_COV_RAMP[hi], t);
+}
+
+function renderCoverageESZ() {
+  if (!ESZ_DRIVE_COV) { buildCoverageLegendEmpty('ESZ coverage data unavailable (esz_drive_coverage.geojson)'); return; }
+  if (!activeCovMPH || !activeCovDriveTime) { buildCoverageLegendEmpty('Select a speed and time'); return; }
+
+  const key = eszCovKey();
+
+  // Check the key actually exists
+  const sampleProps = ESZ_DRIVE_COV.features[0]?.properties || {};
+  if (!(key in sampleProps)) { buildCoverageLegendEmpty(`No data for ${activeCovMPH} mph / ${activeCovDriveTime} min`); return; }
+
+  // Filter by station if not ALL — each ESZ row is per station_id
+  let features = ESZ_DRIVE_COV.features;
+  if (activeStation !== 'ALL') {
+    features = features.filter(f => f.properties.station_id === activeStation);
+  }
+
+  // For ALL stations: if an ESZ appears for multiple stations, take the max coverage
+  // Build a lookup: ESZ_ID → best coverage value + properties
+  const eszBest = {};
+  for (const f of features) {
+    const id  = f.properties.ESZ_ID;
+    const val = parseFloat(f.properties[key]) || 0;
+    if (!eszBest[id] || val > eszBest[id].val) {
+      eszBest[id] = { val, props: f.properties, geometry: f.geometry };
+    }
+  }
+
+  const renderFeatures = Object.values(eszBest).map(e => ({
+    type: 'Feature',
+    properties: { ...e.props, _covVal: e.val },
+    geometry: e.geometry,
+  }));
+
+  if (!renderFeatures.length) { buildCoverageLegendEmpty('No ESZ data for selection'); return; }
+
+  isochroneLayer = L.geoJSON({ type:'FeatureCollection', features: renderFeatures }, {
+    style: feat => {
+      const val = feat.properties._covVal;
+      return {
+        fillColor:   eszCovColor(val),
+        fillOpacity: 1.0,
+        color:       '#ffffff',
+        weight:      0.5,
+        opacity:     0.3,
+      };
+    },
+    onEachFeature: (feat, layer) => {
+      const props = feat.properties;
+      const val   = props._covVal;
+      const pct   = (val * 100).toFixed(1);
+      layer.on({
+        mouseover: e => {
+          if (!windowFocused) return;
+          e.target.setStyle({ weight:2, color:'#ffffff', opacity:1 });
+          e.target.bringToFront();
+        },
+        mouseout: e => {
+          e.target.setStyle({ weight:0.5, color:'#ffffff', opacity:0.3 });
+        },
+        click: () => showCoverageESZDetail(props, val),
+      });
+      layer.bindTooltip(
+        `<b>${props.ESZ_ID}</b><br>${activeCovMPH} mph · ${activeCovDriveTime} min<br>Coverage: ${pct}%`,
+        {sticky:true, opacity:0.9, permanent:false, closeOnClick:true}
+      );
+    }
+  }).addTo(map);
+
+  if (stationBoundaryLayer) stationBoundaryLayer.bringToFront();
+  if (stationLabelLayer)    stationLabelLayer.eachLayer(l => l.bringToFront?.());
+
+  buildCoverageLegendESZCov();
+}
+
+// ── POLYGONS VIEW ─────────────────────────────────────────────────────────
+// ALL station: show all stations colored by station, filtered by time + MPH
+// Single station + ALL mph: all speeds layered, colored by MPH, biggest first
+// Single station + one MPH: just that tier, colored by MPH, biggest first
+function renderCoveragePolygons() {
+  if (!DRIVE_TIME_GEO) { buildCoverageLegendEmpty('Polygon data unavailable'); return; }
+
+  const targetMin = parseFloat(activeCovDriveTime);
+  let features = DRIVE_TIME_GEO.features.filter(f =>
+    parseFloat(f.properties.minutes) === targetMin
+  );
+
+  if (activeStation !== 'ALL') {
+    features = features.filter(f => f.properties.station_id === activeStation);
+  }
+
+  if (activeCovMPH && activeCovMPH !== 'ALL') {
+    const targetMPH = parseFloat(activeCovMPH);
+    features = features.filter(f => parseFloat(f.properties.speed_mph) === targetMPH);
+  }
+
+  if (!features.length) { buildCoverageLegendEmpty('No polygons for selection'); return; }
+
+  // Sort biggest first so smaller polygons sit on top
+  function polyArea(feat) {
+    const coords = feat.geometry.coordinates[0];
+    if (!coords?.length) return 0;
+    const lons = coords.map(c=>c[0]), lats = coords.map(c=>c[1]);
+    return (Math.max(...lons)-Math.min(...lons)) * (Math.max(...lats)-Math.min(...lats));
+  }
+  features = [...features].sort((a,b) => polyArea(b) - polyArea(a));
+
+  isochroneLayer = L.geoJSON({ type:'FeatureCollection', features }, {
+    style: feat => {
+      const sid = feat.properties.station_id;
+      const mph = String(parseFloat(feat.properties.speed_mph));
+      let fillColor, strokeColor;
+      if (activeStation === 'ALL') {
+        // All stations → color by station
+        const c = STATION_COLORS[sid] || '#00cfff';
+        fillColor = c; strokeColor = c;
+      } else {
+        // Single station → color by MPH tier
+        const c = MPH_COLORS[mph] || { fill:'#00cfff', stroke:'#33dfff' };
+        fillColor = c.fill; strokeColor = c.stroke;
+      }
+      return { fillColor, fillOpacity:0.25, color:strokeColor, weight:2, opacity:0.9 };
+    },
+    onEachFeature: (feat, layer) => {
+      const sid = feat.properties.station_id;
+      const mph = feat.properties.speed_mph;
+      const min = feat.properties.minutes;
+      layer.on({
+        mouseover: e => {
+          if (!windowFocused) return;
+          e.target.setStyle({ fillOpacity:0.5, weight:3 });
+          e.target.bringToFront();
+        },
+        mouseout: e => { isochroneLayer?.resetStyle(e.target); },
+        click: () => showCoveragePolyDetail(feat.properties),
+      });
+      layer.bindTooltip(
+        `<b>${sid}</b><br>${min} min · ${mph} mph`,
+        {sticky:true, opacity:0.9, permanent:false, closeOnClick:true}
+      );
+    }
+  }).addTo(map);
+
+  if (stationBoundaryLayer) stationBoundaryLayer.bringToFront();
+  if (stationLabelLayer)    stationLabelLayer.eachLayer(l => l.bringToFront?.());
+
+  buildCoverageLegendPolygons(features);
+}
+
+// ── ROAD VIEW ─────────────────────────────────────────────────────────────
+// Renders LineString road segments colored by overlap count —
+// how many station polygon isochrones cover each segment.
+// Overlap is computed at render time using point-in-polygon checks.
+function renderCoverageRoads() {
+  if (!DRIVE_TIME_ROADS) { buildCoverageLegendEmpty('Road data unavailable (drive_time_roads.geojson)'); return; }
+  if (!DRIVE_TIME_GEO)   { buildCoverageLegendEmpty('Polygon data required for overlap computation'); return; }
+
+  // Filter road segments by selected MPH and drive time
+  // Both filters always active — roads show segments matching both dimensions
+  const targetMin = parseFloat(activeCovDriveTime);
+  let roadFeatures = DRIVE_TIME_ROADS.features.filter(f =>
+    parseFloat(f.properties.minutes) === targetMin
+  );
+  if (activeCovMPH && activeCovMPH !== 'ALL') {
+    const targetMPH = parseFloat(activeCovMPH);
+    roadFeatures = roadFeatures.filter(f => parseFloat(f.properties.speed_mph) === targetMPH);
+  }
+
+  // If single station, restrict to roads for that station only
+  if (activeStation !== 'ALL') {
+    roadFeatures = roadFeatures.filter(f => f.properties.station_id === activeStation);
+  }
+
+  if (!roadFeatures.length) { buildCoverageLegendEmpty('No road segments for selection'); return; }
+
+  // Build polygon set for overlap checking — all stations, same filter
+  let polyFeatures = DRIVE_TIME_GEO.features.filter(f =>
+    parseFloat(f.properties.minutes) === targetMin
+  );
+  if (activeCovMPH && activeCovMPH !== 'ALL') {
+    const targetMPH = parseFloat(activeCovMPH);
+    polyFeatures = polyFeatures.filter(f => parseFloat(f.properties.speed_mph) === targetMPH);
+  }
+
+  // Point-in-polygon: ray casting on the first ring
+  function pointInPoly(px, py, coords) {
+    let inside = false;
+    for (let i=0, j=coords.length-1; i<coords.length; j=i++) {
+      const xi=coords[i][0], yi=coords[i][1], xj=coords[j][0], yj=coords[j][1];
+      if (((yi>py)!==(yj>py)) && (px < (xj-xi)*(py-yi)/(yj-yi)+xi)) inside=!inside;
+    }
+    return inside;
+  }
+
+  // For a LineString, test its midpoint against each polygon
+  function overlapCount(lineCoords) {
+    const mid = lineCoords[Math.floor(lineCoords.length/2)];
+    const [px, py] = mid;
+    let count = 0;
+    for (const poly of polyFeatures) {
+      const rings = poly.geometry.type === 'Polygon'
+        ? [poly.geometry.coordinates[0]]
+        : poly.geometry.coordinates.map(r=>r[0]);
+      for (const ring of rings) {
+        if (pointInPoly(px, py, ring)) { count++; break; }
+      }
+    }
+    return count;
+  }
+
+  // Pre-compute overlap for each segment
+  const segments = roadFeatures.map(f => ({
+    feat: f,
+    overlap: overlapCount(f.geometry.coordinates),
+  }));
+
+  const overlapColor = n => OVERLAP_COLORS[Math.min(n,OVERLAP_COLORS.length)-1] || OVERLAP_COLORS[OVERLAP_COLORS.length-1];
+
+  const fc = { type:'FeatureCollection', features: roadFeatures };
+
+  isochroneLayer = L.geoJSON(fc, {
+    style: feat => {
+      const seg = segments.find(s => s.feat === feat);
+      const ov  = seg ? seg.overlap : 1;
+      return {
+        color:   overlapColor(ov),
+        weight:  ov > 1 ? 3.5 : 2,
+        opacity: 0.85,
+      };
+    },
+    onEachFeature: (feat, layer) => {
+      const sid = feat.properties.station_id;
+      const mph = feat.properties.speed_mph;
+      const min = feat.properties.minutes;
+      const seg = segments.find(s => s.feat === feat);
+      const ov  = seg ? seg.overlap : 1;
+      layer.on({
+        mouseover: e => {
+          if (!windowFocused) return;
+          e.target.setStyle({ weight: ov > 1 ? 5 : 3.5, opacity: 1 });
+          e.target.bringToFront();
+        },
+        mouseout: e => { isochroneLayer?.resetStyle(e.target); },
+        click: () => showCoverageRoadDetail(feat.properties, ov),
+      });
+      layer.bindTooltip(
+        `<b>${sid}</b><br>${min} min · ${mph} mph<br>Overlap: ${ov} station${ov!==1?'s':''}`,
+        {sticky:true, opacity:0.9, permanent:false, closeOnClick:true}
+      );
+    }
+  }).addTo(map);
+
+  if (stationBoundaryLayer) stationBoundaryLayer.bringToFront();
+  if (stationLabelLayer)    stationLabelLayer.eachLayer(l => l.bringToFront?.());
+
+  buildCoverageLegendRoads(segments);
+}
+
+// ── COVERAGE LEGENDS ──────────────────────────────────────────────────────
+function buildCoverageLegendPolygons(features) {
+  const dt = activeCovDriveTime;
+  const mphLabel = activeCovMPH === 'ALL' ? 'All speeds' : `${activeCovMPH} mph`;
+
+  if (activeStation === 'ALL') {
+    // Color by station
+    const stations = [...new Set(features.map(f => f.properties.station_id))].sort();
+    document.getElementById('legend-title').innerHTML =
+      `Polygons&nbsp;·&nbsp;<span style="color:var(--accent)">${dt} min · ${mphLabel}</span>`;
+    document.getElementById('legend-rows').innerHTML = stations.map(sid => {
+      const c = STATION_COLORS[sid] || '#00cfff';
+      return `<div class="legend-row"><div class="legend-swatch" style="background:${c};opacity:0.8;border-radius:2px"></div><span>${sid}</span></div>`;
+    }).join('');
+  } else {
+    // Single station — color by MPH
+    const speeds = [...new Set(features.map(f => String(parseFloat(f.properties.speed_mph))))].sort((a,b)=>parseFloat(a)-parseFloat(b));
+    const c = STATION_COLORS[activeStation] || 'var(--accent)';
+    document.getElementById('legend-title').innerHTML =
+      `<span style="color:${c}">${activeStation}</span>&nbsp;·&nbsp;<span style="color:var(--accent)">${dt} min</span>`;
+    document.getElementById('legend-rows').innerHTML = speeds.map(s => {
+      const mc = MPH_COLORS[s] || { fill:'#00cfff' };
+      return `<div class="legend-row"><div class="legend-swatch" style="background:${mc.fill};opacity:0.8;border-radius:2px"></div><span>${s} mph</span></div>`;
+    }).join('');
+  }
+}
+
+function buildCoverageLegendRoads(segments) {
+  const maxOv = Math.max(...segments.map(s=>s.overlap), 1);
+  const label = activeCovSubType === 'mph' ? `${activeCovMPH} mph` : `${activeCovDriveTime} min`;
+  document.getElementById('legend-title').innerHTML =
+    `Road View&nbsp;·&nbsp;<span style="color:var(--accent)">${label}</span>`;
+  const rows = [];
+  for (let i=1; i<=Math.min(maxOv, OVERLAP_COLORS.length); i++) {
+    const label2 = i === OVERLAP_COLORS.length ? `${i}+ stations` : `${i} station${i>1?'s':''}`;
+    rows.push(`<div class="legend-row">
+      <div style="width:22px;height:4px;border-radius:2px;background:${OVERLAP_COLORS[i-1]};flex-shrink:0"></div>
+      <span>${label2}</span>
+    </div>`);
+  }
+  document.getElementById('legend-rows').innerHTML = rows.join('');
+}
+
+function buildCoverageLegendESZCov() {
+  const mph = activeCovMPH, dt = activeCovDriveTime;
+  document.getElementById('legend-title').innerHTML =
+    `ESZ Coverage&nbsp;·&nbsp;<span style="color:var(--accent)">${mph} mph · ${dt} min</span>`;
+  // Use the exact ramp stops so swatches match what's on the map
+  const stops = ESZ_COV_RAMP.map((color, i) => {
+    const frac = i / (ESZ_COV_RAMP.length - 1);
+    const pct  = Math.round(frac * 100);
+    return `<div class="legend-row">
+      <div class="legend-swatch" style="background:${color}"></div>
+      <span>${pct}%</span>
+    </div>`;
+  }).reverse(); // 100% at top
+  document.getElementById('legend-rows').innerHTML = stops.join('');
+}
+
+function buildCoverageLegendESZ() {
+  // Kept for safety — redirects to real legend or empty
+  if (ESZ_DRIVE_COV) buildCoverageLegendESZCov();
+  else buildCoverageLegendEmpty('ESZ data not loaded');
+}
+
+function buildCoverageLegendEmpty(msg = 'No data') {
+  document.getElementById('legend-title').textContent = 'Coverage';
+  document.getElementById('legend-rows').innerHTML =
+    `<div style="font-size:12px;color:var(--muted)">${msg}</div>`;
+}
+
+// ── COVERAGE SIDEBAR ──────────────────────────────────────────────────────
+function showCoverageOverview() {
+  document.getElementById('sidebar-title').textContent = 'Coverage';
+
+  if (activeCovView === 'esz') {
+    showCoverageESZOverview();
+    return;
+  }
+
+  if (activeCovView === 'polygons') {
+    showCoveragePolygonOverview();
+    return;
+  }
+
+  // Road view
+  showCoverageRoadOverview();
+}
+
+function showCoveragePolygonOverview() {
+  const sid = activeStation;
+
+  if (sid === 'ALL') {
+    document.getElementById('sidebar-sub').textContent = 'Polygons · Select a station';
+    document.getElementById('sidebar-body').innerHTML = `
+      <div class="cov-placeholder">
+        <div class="cov-placeholder-icon">⬡</div>
+        <div class="cov-placeholder-title">Select a Station</div>
+        <div>Choose a station using the pills above to view its drive time polygon isochrones, layered by speed.</div>
+      </div>`;
+    return;
+  }
+
+  if (!DRIVE_TIME_GEO) {
+    document.getElementById('sidebar-sub').textContent = 'Polygons · No data';
+    document.getElementById('sidebar-body').innerHTML = `<div class="cov-placeholder"><div class="cov-placeholder-icon">⚠</div><div class="cov-placeholder-title">No Polygon Data</div></div>`;
+    return;
+  }
+
+  const stFeats = DRIVE_TIME_GEO.features.filter(f => f.properties.station_id === sid);
+  const speeds  = [...new Set(stFeats.map(f => parseFloat(f.properties.speed_mph)))].sort((a,b)=>a-b);
+  const times   = [...new Set(stFeats.map(f => parseFloat(f.properties.minutes)))].sort((a,b)=>a-b);
+  const c       = STATION_COLORS[sid] || 'var(--accent)';
+
+  const label = activeCovSubType === 'mph'
+    ? `${activeCovMPH} mph`
+    : `${activeCovDriveTime} min`;
+  document.getElementById('sidebar-sub').textContent = `Polygons · ${sid} · ${label}`;
+
+  document.getElementById('sidebar-body').innerHTML = `
+    <div class="sec-hdr" style="color:${c}">Polygons · ${sid}</div>
+    <table class="kv-table">
+      <tr><td>Station</td><td><span class="kv-val-lg" style="color:${c}">${sid}</span></td></tr>
+      <tr><td>Total Polygons</td><td>${stFeats.length}</td></tr>
+      <tr><td>Speeds</td><td>${speeds.map(s=>s+' mph').join(', ')}</td></tr>
+      <tr><td>Times</td><td>${times.map(t=>t+' min').join(', ')}</td></tr>
+    </table>
+    <div class="sec-hdr">Speed Layers</div>
+    ${speeds.map(s => {
+      const mc = MPH_COLORS[String(s)] || { fill:'#00cfff' };
+      const cnt = stFeats.filter(f=>parseFloat(f.properties.speed_mph)===s).length;
+      return `<div class="incident-stat-card" style="border-left-color:${mc.fill}">
+        <div class="isc-head">
+          <span class="isc-prog" style="color:${mc.fill}">${s} mph</span>
+          <span class="isc-risk" style="color:${mc.fill};border:1px solid ${mc.fill};background:${mc.fill}18">${cnt} polygon${cnt!==1?'s':''}</span>
+        </div>
+      </div>`;
+    }).join('')}
+    <div style="margin-top:8px;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;font-size:13px;color:var(--muted)">
+      Polygons are rendered largest-first so smaller high-speed zones appear on top. Click a polygon to inspect it.
+    </div>`;
+}
+
+function showCoverageRoadOverview() {
+  if (!DRIVE_TIME_ROADS) {
+    document.getElementById('sidebar-sub').textContent = 'Road View · No data loaded';
+    document.getElementById('sidebar-body').innerHTML = `<div class="cov-placeholder"><div class="cov-placeholder-icon">⚠</div><div class="cov-placeholder-title">No Road Data</div><div>drive_time_roads.geojson could not be loaded.</div></div>`;
+    return;
+  }
+
+  const label = activeCovSubType === 'mph' ? `${activeCovMPH} mph` : `${activeCovDriveTime} min`;
+  const stLabel = activeStation === 'ALL' ? 'All Stations' : activeStation;
+  document.getElementById('sidebar-sub').textContent = `Road View · ${stLabel} · ${label}`;
+
+  const allSpeeds = [...new Set(DRIVE_TIME_ROADS.features.map(f=>parseFloat(f.properties.speed_mph)))].sort((a,b)=>a-b);
+  const allTimes  = [...new Set(DRIVE_TIME_ROADS.features.map(f=>parseFloat(f.properties.minutes)))].sort((a,b)=>a-b);
+
+  // Per-station segment counts
+  const stRows = Object.keys(STATION_COLORS).map(sid => {
+    let feats = DRIVE_TIME_ROADS.features.filter(f => f.properties.station_id === sid);
+    if (activeCovSubType === 'mph') feats = feats.filter(f=>String(parseFloat(f.properties.speed_mph))===activeCovMPH);
+    else feats = feats.filter(f=>String(parseFloat(f.properties.minutes))===activeCovDriveTime);
+    if (!feats.length) return '';
+    const c = STATION_COLORS[sid];
+    return `<div class="incident-stat-card" style="border-left-color:${c}">
+      <div class="isc-head">
+        <span class="isc-prog">${sid}</span>
+        <span class="isc-risk" style="color:${c};border:1px solid ${c};background:${c}18">${feats.length} segments</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('sidebar-body').innerHTML = `
+    <div class="sec-hdr" style="color:var(--accent)">Road View · Overlap</div>
+    <table class="kv-table">
+      <tr><td>Filter</td><td style="color:var(--accent);font-weight:700">${label}</td></tr>
+      <tr><td>Station</td><td>${stLabel}</td></tr>
+      <tr><td>Speeds</td><td>${allSpeeds.map(s=>s+' mph').join(', ')}</td></tr>
+      <tr><td>Times</td><td>${allTimes.map(t=>t+' min').join(', ')}</td></tr>
+    </table>
+    <div class="sec-hdr">Overlap Legend</div>
+    ${OVERLAP_COLORS.map((c,i)=>`
+      <div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px">
+        <div style="width:22px;height:4px;border-radius:2px;background:${c};flex-shrink:0"></div>
+        <span style="color:var(--muted)">${i===OVERLAP_COLORS.length-1?`${i+1}+ stations`:`${i+1} station${i>0?'s':''}`}</span>
+      </div>`).join('')}
+    <div class="sec-hdr">By Station</div>
+    ${stRows || '<div style="font-size:13px;color:var(--muted);padding:8px 0">No segments for this filter</div>'}
+    <div style="margin-top:8px;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;font-size:13px;color:var(--muted)">
+      Road segments are colored by how many station isochrone polygons they fall within. Brighter = more overlap.
+    </div>`;
+}
+
+function showCoveragePolyDetail(props) {
+  const sid = props.station_id;
+  const mph = parseFloat(props.speed_mph);
+  const min = parseFloat(props.minutes);
+  const c   = STATION_COLORS[sid] || 'var(--accent)';
+  const mc  = MPH_COLORS[String(mph)] || { fill:'#00cfff' };
+
+  document.getElementById('sidebar-title').textContent = sid;
+  document.getElementById('sidebar-sub').textContent = `Polygons · ${min} min · ${mph} mph`;
+
+  document.getElementById('sidebar-body').innerHTML = `
+    <div class="sec-hdr" style="color:${c}">Polygon Detail</div>
+    <table class="kv-table">
+      <tr><td>Station</td><td><span class="kv-val-lg" style="color:${c}">${sid}</span></td></tr>
+      <tr><td>Drive Time</td><td><span class="kv-val-lg">${min} min</span></td></tr>
+      <tr><td>Speed</td><td><span class="kv-val-lg" style="color:${mc.fill}">${mph} mph</span></td></tr>
+    </table>
+    <div style="margin-top:8px;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;font-size:13px;color:var(--muted)">
+      This polygon shows the estimated area reachable from ${sid} within ${min} minutes at ${mph} mph average road speed.
+    </div>
+    <div class="action-row">
+      <button class="btn-sec" onclick="showCoverageOverview()">← Overview</button>
+      <button class="btn-pri" onclick="exportPDF()">⬇ PDF · Coverage</button>
+    </div>`;
+}
+
+function showCoverageRoadDetail(props, overlapCount) {
+  const sid = props.station_id;
+  const mph = parseFloat(props.speed_mph);
+  const min = parseFloat(props.minutes);
+  const c   = STATION_COLORS[sid] || 'var(--accent)';
+  const oc  = OVERLAP_COLORS[Math.min(overlapCount, OVERLAP_COLORS.length) - 1];
+
+  document.getElementById('sidebar-title').textContent = sid;
+  document.getElementById('sidebar-sub').textContent = `Road View · ${min} min · ${mph} mph`;
+
+  document.getElementById('sidebar-body').innerHTML = `
+    <div class="sec-hdr" style="color:${c}">Road Segment Detail</div>
+    <table class="kv-table">
+      <tr><td>Station</td><td><span class="kv-val-lg" style="color:${c}">${sid}</span></td></tr>
+      <tr><td>Drive Time</td><td><span class="kv-val-lg">${min} min</span></td></tr>
+      <tr><td>Speed</td><td><span class="kv-val-lg">${mph} mph</span></td></tr>
+      <tr><td>Station Overlap</td><td><span class="kv-val-lg" style="color:${oc}">${overlapCount} station${overlapCount!==1?'s':''}</span></td></tr>
+    </table>
+    <div style="margin-top:8px;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;font-size:13px;color:var(--muted)">
+      This road segment is reachable from <strong style="color:${oc}">${overlapCount} station${overlapCount!==1?'s':''}</strong> within the selected drive time and speed parameters.
+    </div>
+    <div class="action-row">
+      <button class="btn-sec" onclick="showCoverageOverview()">← Overview</button>
+      <button class="btn-pri" onclick="exportPDF()">⬇ PDF · Coverage</button>
+    </div>`;
+}
+
+function showCoverageESZOverview() {
+  const mph = activeCovMPH, dt = activeCovDriveTime;
+  const stLabel = activeStation === 'ALL' ? 'All Stations' : activeStation;
+  document.getElementById('sidebar-sub').textContent = `ESZ View · ${stLabel} · ${mph} mph · ${dt} min`;
+
+  if (!ESZ_DRIVE_COV) {
+    document.getElementById('sidebar-body').innerHTML = `
+      <div class="cov-placeholder"><div class="cov-placeholder-icon">⚠</div>
+      <div class="cov-placeholder-title">No ESZ Data</div>
+      <div>esz_drive_coverage.geojson could not be loaded.</div></div>`;
+    return;
+  }
+
+  const key = eszCovKey();
+  let features = ESZ_DRIVE_COV.features;
+  if (activeStation !== 'ALL') features = features.filter(f => f.properties.station_id === activeStation);
+
+  // Aggregate: best coverage per ESZ
+  const eszBest = {};
+  for (const f of features) {
+    const id  = f.properties.ESZ_ID;
+    const val = parseFloat(f.properties[key]) || 0;
+    if (!eszBest[id] || val > eszBest[id]) eszBest[id] = val;
+  }
+  const vals = Object.values(eszBest);
+  if (!vals.length) {
+    document.getElementById('sidebar-body').innerHTML = `<div class="cov-placeholder"><div class="cov-placeholder-icon">⬡</div><div class="cov-placeholder-title">No Data</div><div>No ESZ coverage data for this selection.</div></div>`;
+    return;
+  }
+
+  const avg  = vals.reduce((a,b)=>a+b,0) / vals.length;
+  const full = vals.filter(v=>v>=1.0).length;
+  const none = vals.filter(v=>v<=0).length;
+  const part = vals.length - full - none;
+
+  // Bracket distribution
+  const brackets = [[0,0.25],[0.25,0.5],[0.5,0.75],[0.75,1.0],[1.0,1.01]];
+  const bracketLabels = ['0–25%','25–50%','50–75%','75–99%','100%'];
+  const bracketCounts = brackets.map(([lo,hi]) => vals.filter(v=>v>=lo&&v<hi).length);
+
+  document.getElementById('sidebar-body').innerHTML = `
+    <div class="sec-hdr" style="color:var(--accent)">ESZ Coverage · ${mph} mph · ${dt} min</div>
+    <table class="kv-table">
+      <tr><td>Station</td><td>${stLabel}</td></tr>
+      <tr><td>ESZs Evaluated</td><td><span class="kv-val-lg">${vals.length}</span></td></tr>
+      <tr><td>Avg Coverage</td><td><span class="kv-val-lg" style="color:${eszCovColor(avg)}">${(avg*100).toFixed(1)}%</span></td></tr>
+      <tr><td>Full Coverage (100%)</td><td style="color:${ESZ_COV_RAMP[5]};font-weight:700">${full}</td></tr>
+      <tr><td>Partial Coverage</td><td>${part}</td></tr>
+      <tr><td>No Coverage</td><td style="color:var(--muted)">${none}</td></tr>
+    </table>
+    <div class="sec-hdr">Distribution</div>
+    ${bracketLabels.map((lbl,i) => {
+      const cnt = bracketCounts[i];
+      const pct = vals.length ? (cnt/vals.length*100).toFixed(0) : 0;
+      const midVal = (brackets[i][0]+brackets[i][1])/2;
+      const barColor = eszCovColor(midVal);
+      return `<div style="margin-bottom:6px">
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px">
+          <span style="color:var(--muted)">${lbl}</span>
+          <span style="color:var(--text);font-weight:600">${cnt} ESZs</span>
+        </div>
+        <div style="height:5px;background:rgba(58,58,92,.4);border-radius:2px">
+          <div style="height:100%;width:${pct}%;background:${barColor};border-radius:2px;transition:width .3s"></div>
+        </div>
+      </div>`;
+    }).join('')}
+    <div style="margin-top:8px;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;font-size:13px;color:var(--muted)">
+      Click any ESZ polygon to see its coverage detail.
+    </div>`;
+}
+
+function showCoverageESZDetail(props, covVal) {
+  const mph = activeCovMPH, dt = activeCovDriveTime;
+  const pct = (covVal * 100).toFixed(1);
+  const color = eszCovColor(covVal);
+  const stColor = STATION_COLORS[props.station_id] || 'var(--accent)';
+
+  document.getElementById('sidebar-title').textContent = props.ESZ_ID;
+  document.getElementById('sidebar-sub').textContent = `ESZ Coverage · ${mph} mph · ${dt} min`;
+
+  // Show all speed tiers for this ESZ
+  const allKeys = Object.keys(props).filter(k => k.startsWith('cov_'));
+  const tierRows = allKeys.sort().map(k => {
+    const m = k.match(/cov_(\d+)mph_(\d+)min/);
+    if (!m) return '';
+    const v = parseFloat(props[k]);
+    const c = eszCovColor(v);
+    return `<tr>
+      <td>${m[1]} mph · ${m[2]} min</td>
+      <td style="color:${c};font-weight:700;text-align:right">${(v*100).toFixed(1)}%</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('sidebar-body').innerHTML = `
+    <div class="sec-hdr" style="color:${color}">ESZ Coverage</div>
+    <table class="kv-table">
+      <tr><td>ESZ</td><td><span class="kv-val-lg">${props.ESZ_ID}</span></td></tr>
+      <tr><td>Station</td><td><span style="color:${stColor};font-weight:700">${props.station_id}</span></td></tr>
+      <tr><td>${mph} mph · ${dt} min</td>
+          <td><span class="kv-val-lg" style="color:${color}">${pct}%</span></td></tr>
+    </table>
+    <div style="margin:10px 0 4px;height:8px;background:rgba(58,58,92,.4);border-radius:4px">
+      <div style="height:100%;width:${Math.min(covVal*100,100)}%;background:${color};border-radius:4px;transition:width .4s"></div>
+    </div>
+    <div class="sec-hdr">All Speed Tiers</div>
+    <table class="kv-table">${tierRows}</table>
+    <div class="action-row">
+      <button class="btn-sec" onclick="showCoverageOverview()">← Overview</button>
+      <button class="btn-pri" onclick="exportPDF()">⬇ PDF · Coverage</button>
+    </div>`;
 }
 
 // ── BOOT ──────────────────────────────────────────────────────────────────

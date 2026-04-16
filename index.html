@@ -27,6 +27,7 @@
     <div class="mode-pills">
       <button class="mode-pill active" id="mode-community" onclick="setMode('community')">Community</button>
       <button class="mode-pill"        id="mode-incident"  onclick="setMode('incident')">Incident Risk</button>
+      <button class="mode-pill"        id="mode-coverage"  onclick="setMode('coverage')">Coverage</button>
     </div>
     <div class="hdr-sep"></div>
 
@@ -66,6 +67,10 @@
       <div id="fy-badge">—</div>
     </div>
 
+    <div id="coverage-controls">
+      <span class="hdr-label">Coverage</span>
+    </div>
+
     <div class="hdr-sep"></div>
     <span class="hdr-label">Station</span>
     <div class="station-pills" id="station-pills"></div>
@@ -74,10 +79,12 @@
     <div id="synthetic-badge">Synthetic Data</div>
   </header>
 
-  <!-- ── SUB HEADER — program + risk level tabs ── -->
+  <!-- ── SUB HEADER — program + risk level tabs / coverage view tabs ── -->
   <div id="subheader">
     <div class="prog-tabs" id="prog-tabs"></div>
     <div class="risk-tabs" id="risk-tabs"></div>
+    <div class="coverage-view-tabs" id="coverage-view-tabs"></div>
+    <div class="coverage-sub-tabs" id="coverage-sub-tabs"></div>
   </div>
 
   <!-- ── MAP ── -->
