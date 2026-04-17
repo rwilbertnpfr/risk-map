@@ -19,12 +19,12 @@ const STATION_COLORS = {
   ST84:'#1B998B', ST85:'#C5D86D', ST86:'#6A4C93',
 };
 
-// Risk colors — atomic ramps from render_riskmaps.py
+// Risk colors — muted, saturated but not neon
 const RISK_NEON = {
-  '1-Low':      '#39ff6e',
-  '2-Moderate': '#ff8c00',
-  '3-High':     '#ff2d55',
-  '4-Maximum':  '#bf5fff',
+  '1-Low':      '#2e9e52',  // forest green
+  '2-Moderate': '#c97a1a',  // warm amber-brown
+  '3-High':     '#c0392b',  // brick red
+  '4-Maximum':  '#7b3fa0',  // deep purple
 };
 const RISK_DARK = {
   '1-Low':      '#0d1f0d',
@@ -36,7 +36,7 @@ const ZERO_BAND_COLOR = '#0a1628';
 const N_BANDS = 4;
 
 const PROG_COLORS = {
-  EMS:'#1565C0', Fire:'#B71C1C', Hazmat:'#E65100', Rescue:'#6A1B9A',
+  EMS:'#3a74b8', Fire:'#c0392b', Hazmat:'#c97a1a', Rescue:'#7b3fa0',
 };
 
 // ── APP STATE ─────────────────────────────────────────────────────────────
@@ -49,9 +49,63 @@ let currentMetric = 'est_population';
 let choroplethLayer      = null;
 let stationBoundaryLayer = null;
 let stationLabelLayer    = null;
+let eszLabelLayer        = null;  // ESZ ID text labels (single-station view)
+
+// Bring station overlay layers to front in correct z-order
+function bringStationLayersToFront() {
+  if (stationBoundaryLayer) stationBoundaryLayer.bringToFront();
+  if (eszLabelLayer)        eszLabelLayer.eachLayer(l => l.bringToFront?.());
+  if (stationLabelLayer)    stationLabelLayer.eachLayer(l => l.bringToFront?.());
+}
 let conservationLayer    = null;
 let showConservation     = true;
 
+// ── TARGET HAZARDS STATE ──────────────────────────────────────────────────
+let TARGET_HAZARDS_GEO  = null;   // FeatureCollection from flowmsp_high_hazard.geojson
+let HAZARD_CAMPUSES     = [];     // derived: one entry per parent_id campus/site
+let hazardsLayer        = null;
+let activeHazardCat     = 'all';
+let activeHazardCampus  = null;   // currently selected campus object
+
+// Map FlowMSP occupancy_type → internal category key
+// Priority order for campus: school > alf > assembly > multifamily > commercial > industrial > special
+const OCCUPANCY_TO_CAT = {
+  'Educational':                  'school',
+  'Day-Care':                     'school',
+  'Board & Care':                 'alf',
+  'Medical Care / Institutional': 'alf',
+  'Assembly':                     'assembly',
+  'Multi-Family':                 'multifamily',
+  'Business/Mercantile':          'commercial',
+  'Industrial':                   'industrial',
+  'High Hazard':                  'industrial',
+  'Storage':                      'industrial',
+  'Special Structures':           'special',
+};
+
+const CAT_PRIORITY = ['school','alf','assembly','multifamily','commercial','industrial','special','other'];
+
+function getBldgCat(props) {
+  return OCCUPANCY_TO_CAT[props.occupancy_type] || 'other';
+}
+
+// For a campus, pick the highest-priority category among its buildings
+function getCampusCat(buildings) {
+  const cats = new Set(buildings.map(f => getBldgCat(f.properties)));
+  for (const c of CAT_PRIORITY) if (cats.has(c)) return c;
+  return 'other';
+}
+
+const HAZARD_CAT_CONFIG = {
+  all:         { label:'All',           color:'#4a6fa5', icon:'◉' },
+  school:      { label:'School / EDU',  color:'#c97a1a', icon:'🏫' },
+  alf:         { label:'ALF / Medical', color:'#c0392b', icon:'🏥' },
+  assembly:    { label:'Assembly',      color:'#3a74b8', icon:'🏟' },
+  multifamily: { label:'Multi-Family',  color:'#d4a017', icon:'🏢' },
+  commercial:  { label:'Commercial',    color:'#1B998B', icon:'🏪' },
+  industrial:  { label:'Industrial',    color:'#6A4C93', icon:'🏭' },
+  special:     { label:'Special',       color:'#7a7a7a', icon:'⚙'  },
+};
 // ── COVERAGE STATE ────────────────────────────────────────────────────────
 let DRIVE_TIME_GEO     = null;  // FeatureCollection — polygon isochrones
 let DRIVE_TIME_ROADS   = null;  // FeatureCollection — road LineString segments
@@ -62,21 +116,21 @@ let activeCovSubType   = 'mph';      // 'mph' | 'drivetime'
 let activeCovMPH       = null;       // e.g. '25', '35', '45'
 let activeCovDriveTime = null;       // e.g. '4'
 
-// Speed MPH color palette
+// Speed MPH color palette — muted, distinct, non-neon
 const MPH_COLORS = {
-  '25': { fill:'#7b61ff', stroke:'#a084ff' },
-  '35': { fill:'#00cfff', stroke:'#33dfff' },
-  '45': { fill:'#ff8c00', stroke:'#ffad44' },
+  '25': { fill:'#4a6fa5', stroke:'#3a5a8a' },  // slate blue
+  '35': { fill:'#3a7d6e', stroke:'#2d6459' },  // teal-green
+  '45': { fill:'#b05a2a', stroke:'#8e4820' },  // burnt sienna
 };
 
-// Overlap count color ramp (1 station → 6+ stations)
+// Overlap count color ramp (1 station → 6+ stations) — muted, sequential
 const OVERLAP_COLORS = [
-  '#39ff6e',  // 1 station  — green
-  '#00cfff',  // 2 stations — cyan
-  '#ff8c00',  // 3 stations — orange
-  '#ff2d55',  // 4 stations — red
-  '#bf5fff',  // 5 stations — purple
-  '#ffffff',  // 6+         — white
+  '#4a7c59',  // 1 station  — muted green
+  '#4a6fa5',  // 2 stations — slate blue
+  '#b07d2a',  // 3 stations — golden brown
+  '#a63d2f',  // 4 stations — brick red
+  '#6b3d8a',  // 5 stations — deep purple
+  '#2c4a6e',  // 6+         — dark navy
 ];
 
 // ── MAP INIT ──────────────────────────────────────────────────────────────
@@ -86,6 +140,37 @@ const map = L.map('map', {
   zoomControl:false, attributionControl:false,
 });
 L.control.zoom({position:'bottomright'}).addTo(map);
+
+// ── TILE LAYER ────────────────────────────────────────────────────────────
+const TILE_DARK   = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+const TILE_STREET = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
+let tileLayer = L.tileLayer(TILE_DARK, { maxZoom:19, opacity:0.7 }).addTo(map);
+let isLightMode = false;
+
+function toggleTheme() {
+  isLightMode = !isLightMode;
+  document.body.classList.toggle('light-mode', isLightMode);
+
+  // Swap tile layer: Voyager street map in light mode, dark carto in dark mode
+  map.removeLayer(tileLayer);
+  tileLayer = L.tileLayer(isLightMode ? TILE_STREET : TILE_DARK, {
+    maxZoom: 19,
+    opacity: isLightMode ? 1.0 : 0.7,
+  }).addTo(map);
+  tileLayer.bringToBack();
+
+  // Update switch label + icon
+  const thumb = document.getElementById('theme-thumb');
+  if (thumb) thumb.textContent = isLightMode ? '☀️' : '🌙';
+  document.getElementById('theme-label').textContent = isLightMode ? 'Light Mode' : 'Dark Mode';
+
+  // Re-render station labels with correct colors
+  renderStationLayers();
+
+  // Re-render so choropleth/coverage colors stay legible
+  if (activeMode !== 'coverage') renderChoropleth();
+  else renderCoverageLayer();
+}
 
 let windowFocused = true;
 function closeAllTooltips() {
@@ -99,10 +184,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const mapEl = document.getElementById('map');
   if (mapEl) mapEl.addEventListener('mouseleave', closeAllTooltips);
 });
-
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-  maxZoom:19, opacity:0.7,
-}).addTo(map);
 
 // ── DATA FETCH ────────────────────────────────────────────────────────────
 async function init() {
@@ -138,20 +219,22 @@ async function init() {
     }
 
     msg.textContent = 'Fetching boundary layers…';
-    const [stRes, facRes, dtRes, dtRoadsRes, eszCovRes, consRes] = await Promise.allSettled([
+    const [stRes, facRes, dtRes, dtRoadsRes, eszCovRes, consRes, thRes] = await Promise.allSettled([
       fetch('data/npfr_station_boundary.geojson'),
       fetch('data/CountyFacility.geojson'),
       fetch('data/drive_time_isochrones.geojson'),
       fetch('data/drive_time_roads.geojson'),
       fetch('data/esz_drive_coverage.geojson'),
       fetch('data/conservation_lands.geojson'),
+      fetch('data/flowmsp_high_hazard.geojson'),
     ]);
-    STATION_GEO      = stRes.status      === 'fulfilled' && stRes.value.ok      ? await stRes.value.json()      : null;
-    FACILITY_GEO     = facRes.status     === 'fulfilled' && facRes.value.ok     ? await facRes.value.json()     : null;
-    DRIVE_TIME_GEO   = dtRes.status      === 'fulfilled' && dtRes.value.ok      ? await dtRes.value.json()      : null;
-    DRIVE_TIME_ROADS = dtRoadsRes.status === 'fulfilled' && dtRoadsRes.value.ok ? await dtRoadsRes.value.json() : null;
-    ESZ_DRIVE_COV    = eszCovRes.status  === 'fulfilled' && eszCovRes.value.ok  ? await eszCovRes.value.json()  : null;
-    CONSERVATION_GEO = consRes.status    === 'fulfilled' && consRes.value.ok    ? await consRes.value.json()    : null;
+    STATION_GEO        = stRes.status      === 'fulfilled' && stRes.value.ok      ? await stRes.value.json()      : null;
+    FACILITY_GEO       = facRes.status     === 'fulfilled' && facRes.value.ok     ? await facRes.value.json()     : null;
+    DRIVE_TIME_GEO     = dtRes.status      === 'fulfilled' && dtRes.value.ok      ? await dtRes.value.json()      : null;
+    DRIVE_TIME_ROADS   = dtRoadsRes.status === 'fulfilled' && dtRoadsRes.value.ok ? await dtRoadsRes.value.json() : null;
+    ESZ_DRIVE_COV      = eszCovRes.status  === 'fulfilled' && eszCovRes.value.ok  ? await eszCovRes.value.json()  : null;
+    CONSERVATION_GEO   = consRes.status    === 'fulfilled' && consRes.value.ok    ? await consRes.value.json()    : null;
+    TARGET_HAZARDS_GEO = thRes.status      === 'fulfilled' && thRes.value.ok      ? await thRes.value.json()      : null;
 
   } catch (err) {
     document.getElementById('load-overlay').innerHTML =
@@ -171,6 +254,7 @@ async function init() {
 
   buildStationPills();
   buildProgTabs();
+  buildHazardCampuses();
   renderStationLayers();
   renderConservationLayer();
   renderChoropleth();
@@ -249,7 +333,7 @@ function selectStation(sid) {
   activeStation = sid;
   activeESZ     = null;
 
-  // Update button label + dot
+  // Update button — show label text only for ALL; single station just shows colored dot + short ID
   const color = sid === 'ALL' ? 'var(--accent)' : (STATION_COLORS[sid] || 'var(--accent)');
   document.getElementById('st-dropdown-label').textContent = sid === 'ALL' ? 'All Stations' : sid;
   document.getElementById('st-dropdown-dot').style.background = color;
@@ -265,6 +349,9 @@ function selectStation(sid) {
   );
 
   document.getElementById('st-dropdown-panel').classList.remove('open');
+
+  // Re-render station layers (dim overlay, ESZ labels, badge, dot markers)
+  renderStationLayers();
 
   if (activeMode === 'coverage') {
     activeCovMPH = null;
@@ -318,20 +405,25 @@ function setMode(mode) {
   document.getElementById('mode-community').classList.toggle('active', mode === 'community');
   document.getElementById('mode-incident').classList.toggle('active',  mode === 'incident');
   document.getElementById('mode-coverage').classList.toggle('active',  mode === 'coverage');
+  const hBtn = document.getElementById('mode-hazards');
+  if (hBtn) hBtn.classList.toggle('active', mode === 'hazards');
 
   app.classList.toggle('incident-mode', mode === 'incident');
   app.classList.toggle('coverage-mode',  mode === 'coverage');
+  app.classList.toggle('hazards-mode',   mode === 'hazards');
 
   if (mode === 'community') {
     activeProgram = null;
     activeRisk    = null;
     activeESZ     = null;
     clearIsochroneLayer();
+    clearHazardsLayer();
     renderChoropleth();
     showStationOverview(activeStation);
   } else if (mode === 'incident') {
     activeESZ = null;
     clearIsochroneLayer();
+    clearHazardsLayer();
     const progs = Object.keys(PROG_RISK_MAP);
     if (progs.length && !activeProgram) {
       selectProgram(progs[0]);
@@ -343,10 +435,20 @@ function setMode(mode) {
     activeProgram = null;
     activeRisk    = null;
     activeESZ     = null;
+    clearHazardsLayer();
     if (choroplethLayer) { map.removeLayer(choroplethLayer); choroplethLayer = null; }
     buildCoverageSubheader();
     renderCoverageLayer();
     showCoverageOverview();
+  } else if (mode === 'hazards') {
+    activeProgram = null;
+    activeRisk    = null;
+    activeESZ     = null;
+    clearIsochroneLayer();
+    if (choroplethLayer) { map.removeLayer(choroplethLayer); choroplethLayer = null; }
+    buildHazardsCatTabs();
+    renderHazardsLayer();
+    showHazardsOverview();
   }
 }
 
@@ -372,57 +474,137 @@ function selectRisk(risk) {
 
 // ── STATION BOUNDARY LAYERS ───────────────────────────────────────────────
 function renderStationLayers() {
-  if (stationBoundaryLayer) map.removeLayer(stationBoundaryLayer);
-  if (stationLabelLayer)    map.removeLayer(stationLabelLayer);
+  if (stationBoundaryLayer) { map.removeLayer(stationBoundaryLayer); stationBoundaryLayer = null; }
+  if (stationLabelLayer)    { map.removeLayer(stationLabelLayer);    stationLabelLayer    = null; }
+  if (eszLabelLayer)        { map.removeLayer(eszLabelLayer);        eszLabelLayer        = null; }
 
+  const isSingle      = activeStation !== 'ALL';
+  const boundaryColor = isLightMode ? '#2244aa' : '#c8c8e8';
+
+  // ── Station boundaries — full opacity for selected, faded for others ──
   if (STATION_GEO?.features?.length) {
     stationBoundaryLayer = L.geoJSON(STATION_GEO, {
-      style: () => ({color:'#c8c8e8', weight:2.5, opacity:0.9, fillOpacity:0}),
+      style: feat => {
+        const sid        = feat.properties.StationID || feat.properties.station_id || '';
+        const isSelected = !isSingle || sid === activeStation;
+        return {
+          color:       boundaryColor,
+          weight:      isSelected ? 2.5 : 1.2,
+          opacity:     isSelected ? 0.9 : 0.3,
+          fillOpacity: 0,
+        };
+      },
       interactive: false,
     }).addTo(map);
   }
 
-  const labelFeatures = [];
+  // ── Station number badge (upper-left of map) ──────────────────────────
+  const badge = document.getElementById('station-badge');
+  if (badge) {
+    if (isSingle) {
+      badge.style.display = 'block';
+      badge.style.color   = STATION_COLORS[activeStation] || 'var(--accent)';
+      badge.textContent   = activeStation.replace('ST', '');
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+
+  // ── Collect station centroid positions ────────────────────────────────
+  const stationCentroids = [];
   if (FACILITY_GEO?.features) {
     FACILITY_GEO.features.forEach(f => {
       const lbl = f.properties.cadlabel || f.properties.CadLabel || '';
       const num = parseInt(lbl);
       if (num >= 81 && num <= 86)
-        labelFeatures.push({sid:'ST'+num, coords:f.geometry.coordinates});
+        stationCentroids.push({ sid:'ST'+num, coords: f.geometry.coordinates });
     });
   } else if (STATION_GEO?.features) {
     STATION_GEO.features.forEach(f => {
       const sid = f.properties.StationID || f.properties.station_id || '';
       if (!sid) return;
-      const flat  = f.geometry.coordinates.flat(10).filter((_,i)=>i%2===0);
-      const flatY = f.geometry.coordinates.flat(10).filter((_,i)=>i%2===1);
+      const flat  = f.geometry.coordinates.flat(10).filter((_,i) => i%2===0);
+      const flatY = f.geometry.coordinates.flat(10).filter((_,i) => i%2===1);
       if (!flat.length) return;
-      labelFeatures.push({
+      stationCentroids.push({
         sid,
-        coords:[
+        coords: [
           flat.reduce((a,b)=>a+b,0)/flat.length,
           flatY.reduce((a,b)=>a+b,0)/flatY.length,
-        ]
+        ],
       });
     });
   }
 
-  if (labelFeatures.length) {
-    const grp = L.layerGroup();
-    labelFeatures.forEach(({sid, coords}) => {
-      L.marker([coords[1], coords[0]], {
-        icon: L.divIcon({
-          className:'',
-          html:`<div style="font-family:Barlow Condensed,sans-serif;font-size:20px;font-weight:700;`
-             + `letter-spacing:.08em;color:#00cfff;`
-             + `text-shadow:-2px -2px 0 #0a0a1a,2px -2px 0 #0a0a1a,-2px 2px 0 #0a0a1a,2px 2px 0 #0a0a1a;`
-             + `white-space:nowrap;pointer-events:none;">${sid}</div>`,
-          iconAnchor:[28,10],
-        }),
-        interactive:false, zIndexOffset:500,
-      }).addTo(grp);
+  // ── Station markers: dot for selected, number label for all others ────
+  if (stationCentroids.length) {
+    const grp       = L.layerGroup();
+    const textColor = isLightMode ? '#003399' : '#4a90d9';
+    const shadow    = isLightMode ? '#ffffff'  : '#0a0a1a';
+
+    stationCentroids.forEach(({ sid, coords }) => {
+      const isSelected = isSingle && sid === activeStation;
+      const dotColor   = STATION_COLORS[sid] || '#4a90d9';
+      const num        = sid.replace('ST','');
+
+      if (isSelected) {
+        // Selected station → colored dot marker
+        L.marker([coords[1], coords[0]], {
+          icon: L.divIcon({
+            className: '',
+            html: `<div style="width:14px;height:14px;border-radius:50%;`
+                + `background:${dotColor};border:2.5px solid ${shadow};`
+                + `box-shadow:0 1px 6px rgba(0,0,0,0.45);pointer-events:none;"></div>`,
+            iconAnchor: [7, 7],
+          }),
+          interactive: false, zIndexOffset: 600,
+        }).addTo(grp);
+      } else {
+        // All other stations → number text label (same as before)
+        L.marker([coords[1], coords[0]], {
+          icon: L.divIcon({
+            className: '',
+            html: `<div style="font-family:Barlow Condensed,sans-serif;font-size:20px;font-weight:700;`
+                + `letter-spacing:.08em;color:${textColor};opacity:${isSingle ? '0.45' : '1'};`
+                + `text-shadow:-2px -2px 0 ${shadow},2px -2px 0 ${shadow},`
+                + `-2px 2px 0 ${shadow},2px 2px 0 ${shadow};`
+                + `white-space:nowrap;pointer-events:none;">${num}</div>`,
+            iconAnchor: [14, 10],
+          }),
+          interactive: false, zIndexOffset: 500,
+        }).addTo(grp);
+      }
     });
     stationLabelLayer = grp.addTo(map);
+  }
+
+  // ── ESZ ID labels — only in single-station view ───────────────────────
+  if (isSingle && ESZ_GEOJSON?.features) {
+    const eszFeats = ESZ_GEOJSON.features.filter(f =>
+      (f.properties.StationID || f.properties.station_id) === activeStation
+    );
+    if (eszFeats.length) {
+      const egrp = L.layerGroup();
+      eszFeats.forEach(f => {
+        const id = f.properties.ESZ_ID;
+        if (!id) return;
+        const ring = f.geometry.type === 'Polygon'
+          ? f.geometry.coordinates[0]
+          : f.geometry.coordinates[0]?.[0];
+        if (!ring?.length) return;
+        const cx = ring.reduce((a,c)=>a+c[0],0) / ring.length;
+        const cy = ring.reduce((a,c)=>a+c[1],0) / ring.length;
+        L.marker([cy, cx], {
+          icon: L.divIcon({
+            className: 'esz-map-label',
+            html: id,
+            iconAnchor: [0, 6],
+          }),
+          interactive: false, zIndexOffset: 400,
+        }).addTo(egrp);
+      });
+      eszLabelLayer = egrp.addTo(map);
+    }
   }
 }
 
@@ -451,19 +633,35 @@ function toggleConservationLayer(checked) {
   if (showConservation) {
     conservationLayer.addTo(map);
     // Restore layer order: conservation sits above choropleth, below station boundaries
-    if (stationBoundaryLayer) stationBoundaryLayer.bringToFront();
+    bringStationLayersToFront();
   } else {
     map.removeLayer(conservationLayer);
   }
 }
 
 
-const RAMPS = {
-  yellow: ['#1a1400','#3d3000','#736000','#a88c00','#ddb800','#ffdd00'],
-  fire:   ['#1a1400','#3d3000','#736000','#a88c00','#ddb800','#ffdd00'],
-  blue:   ['#1a1400','#3d3000','#736000','#a88c00','#ddb800','#ffdd00'],
-  orange: ['#1a1400','#3d3000','#736000','#a88c00','#ddb800','#ffdd00'],
+// Community choropleth ramps: index 0 = no data/zero, 1–5 = low→high value
+// Solid colors — opacity is controlled per-band via fillOpacity in the style function.
+// Low values are nearly transparent (0.08), high values are fully opaque (0.95).
+const RAMP_COLORS = {
+  fire:   '#c87800',  // amber-gold  — population / general counts
+  blue:   '#1a5fc8',  // royal blue  — hydrant coverage / density
+  orange: '#c84800',  // burnt orange — flood / hazard
+  yellow: '#0a7272',  // deep teal   — age / year built
 };
+const RAMP_OPACITIES = [0, 0.12, 0.30, 0.52, 0.74, 0.95];
+
+// Legacy RAMPS kept for legend swatches — built from RAMP_COLORS at display time
+function getRampSwatches(ramp) {
+  const base = RAMP_COLORS[ramp] || RAMP_COLORS.fire;
+  return RAMP_OPACITIES.map(o => {
+    if (o === 0) return 'rgba(128,128,128,0.10)';
+    const r = parseInt(base.slice(1,3),16);
+    const g = parseInt(base.slice(3,5),16);
+    const b = parseInt(base.slice(5,7),16);
+    return `rgba(${r},${g},${b},${o})`;
+  });
+}
 
 const PCT_METRICS = new Set([
   'pct_hydrant_1000ft','pct_flood_ae',
@@ -513,12 +711,12 @@ function getRamp(metric) {
   return 'fire';
 }
 function communityColor(val, breaks, ramp) {
-  const colors = RAMPS[ramp] || RAMPS.yellow;
-  if (val === undefined || val === null || val === '' || isNaN(parseFloat(val))) return colors[0];
+  if (val === undefined || val === null || val === '' || isNaN(parseFloat(val))) return { color: RAMP_COLORS[ramp] || RAMP_COLORS.fire, opacity: RAMP_OPACITIES[0] };
   const n = parseFloat(val);
-  if (n <= 0) return colors[0];
-  for (let i=0; i<breaks.length; i++) { if (n <= breaks[i]) return colors[i+1]; }
-  return colors[colors.length-1];
+  if (n <= 0) return { color: RAMP_COLORS[ramp] || RAMP_COLORS.fire, opacity: RAMP_OPACITIES[0] };
+  let idx = RAMP_OPACITIES.length - 1;
+  for (let i = 0; i < breaks.length; i++) { if (n <= breaks[i]) { idx = i + 1; break; } }
+  return { color: RAMP_COLORS[ramp] || RAMP_COLORS.fire, opacity: RAMP_OPACITIES[idx] };
 }
 function quantileBreaks(vals, n) {
   const sorted = [...vals].filter(v=>v>0).sort((a,b)=>a-b);
@@ -587,42 +785,44 @@ function lerpHex(dark, neon, t) {
   return '#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('');
 }
 
+// Incident risk band opacities: 0 = no incidents (transparent), 1-4 = pale→saturated
+const INCIDENT_OPACITIES = [0.06, 0.28, 0.52, 0.76, 0.96];
+
 function buildBandColors(risk, nBands) {
-  // Index 0 = zero band (deep navy); indices 1..nBands = dim→neon
-  const dark = RISK_DARK[risk] || '#001020';
+  // Returns array: index 0 = zero/no-incidents color, indices 1..nBands = low→high
   const neon = RISK_NEON[risk] || '#00cfff';
-  const colors = [ZERO_BAND_COLOR];
-  for (let i=0; i<nBands; i++) {
-    const t = 0.15 + 0.85 * (i / Math.max(nBands-1, 1));
-    colors.push(lerpHex(dark, neon, t));
+  const colors = ['rgba(128,128,128,0.06)']; // zero band — near transparent
+  for (let i = 0; i < nBands; i++) {
+    const op = INCIDENT_OPACITIES[Math.min(i, INCIDENT_OPACITIES.length - 1)];
+    // Parse neon hex to rgb
+    const r = parseInt(neon.slice(1,3),16);
+    const g = parseInt(neon.slice(3,5),16);
+    const b = parseInt(neon.slice(5,7),16);
+    colors.push(`rgba(${r},${g},${b},${op})`);
   }
   return colors;
 }
 
-function incidentColor(count, cuts, bandColors) {
-  if (!count || isNaN(count) || count <= 0) return ZERO_BAND_COLOR;
-  for (let i=0; i<cuts.length-1; i++) {
-    if (count >= cuts[i] && count < cuts[i+1])
-      return bandColors[i+1] || bandColors[bandColors.length-1];
+function incidentFillStyle(count, cuts, bandColors) {
+  // Returns {fillColor, fillOpacity} for Leaflet style
+  if (!count || isNaN(count) || count <= 0) return { fillColor: '#888888', fillOpacity: 0.06 };
+  let idx = bandColors.length - 1;
+  for (let i = 0; i < cuts.length - 1; i++) {
+    if (count >= cuts[i] && count < cuts[i+1]) { idx = i + 1; break; }
   }
-  return bandColors[bandColors.length-1];
+  const col = bandColors[Math.min(idx, bandColors.length - 1)];
+  // col is already an rgba string — use fillOpacity:1 so Leaflet respects the rgba
+  return { fillColor: col, fillOpacity: 1 };
 }
 
 // ── LEGENDS ───────────────────────────────────────────────────────────────
 function buildCommunityLegend(breaks, ramp, metric) {
-  const colors = RAMPS[ramp] || RAMPS.yellow;
+  const swatches = getRampSwatches(ramp);
   const isYear = YEAR_METRICS.has(metric);
   const isPct  = PCT_METRICS.has(metric);
   let labels;
   if (isPct) {
-    labels = [
-      'Zero / no data',
-      '0 – 20%',
-      '20 – 40%',
-      '40 – 60%',
-      '60 – 80%',
-      '80 – 100%',
-    ];
+    labels = ['Zero / no data','0 – 20%','20 – 40%','40 – 60%','60 – 80%','80 – 100%'];
   } else {
     const fmtBreak = v => isYear ? Math.round(v) + ' yrs' : fmt(v, metric);
     labels = [
@@ -635,26 +835,27 @@ function buildCommunityLegend(breaks, ramp, metric) {
     ];
   }
   document.getElementById('legend-title').textContent = metricLabel(metric);
-  document.getElementById('legend-rows').innerHTML = colors.map((c,i) =>
-    `<div class="legend-row"><div class="legend-swatch" style="background:${c}"></div><span>${labels[i]||''}</span></div>`
+  document.getElementById('legend-rows').innerHTML = swatches.map((c,i) =>
+    `<div class="legend-row"><div class="legend-swatch" style="background:${c};border:1px solid rgba(128,128,128,0.2)"></div><span>${labels[i]||''}</span></div>`
   ).join('');
 }
 
 function buildIncidentLegend(cuts, bandColors, program, risk) {
   const neon = RISK_NEON[risk] || '#00cfff';
   document.getElementById('legend-title').innerHTML =
-    `<span style="color:${PROG_COLORS[program]||'#fff'}">${program}</span>`
+    `<span style="color:${PROG_COLORS[program]||'var(--text)'}">${program}</span>`
     + `<span style="color:var(--muted)"> · </span>`
     + `<span style="color:${neon}">${risk}</span>`;
   const rows = [
-    `<div class="legend-row"><div class="legend-swatch" style="background:${ZERO_BAND_COLOR}"></div><span>No Incidents</span></div>`
+    `<div class="legend-row"><div class="legend-swatch" style="background:rgba(128,128,128,0.10);border:1px solid rgba(128,128,128,0.2)"></div><span>No Incidents</span></div>`
   ];
   const nActive = cuts.length - 1;
-  for (let i=0; i<nActive; i++) {
-    const lo = cuts[i].toLocaleString();
-    const hi = i === nActive-1 ? '∞' : (cuts[i+1]-1).toLocaleString();
+  for (let i = 0; i < nActive; i++) {
+    const lo  = cuts[i].toLocaleString();
+    const hi  = i === nActive-1 ? '∞' : (cuts[i+1]-1).toLocaleString();
+    const col = bandColors[i+1] || bandColors[bandColors.length-1];
     rows.push(
-      `<div class="legend-row"><div class="legend-swatch" style="background:${bandColors[i+1]||bandColors[bandColors.length-1]}"></div>`
+      `<div class="legend-row"><div class="legend-swatch" style="background:${col};border:1px solid rgba(128,128,128,0.2)"></div>`
       + `<span>${lo} – ${hi}</span></div>`
     );
   }
@@ -666,9 +867,9 @@ function renderChoropleth() {
   if (activeMode === 'coverage') return;
   if (choroplethLayer) map.removeLayer(choroplethLayer);
   activeMode === 'community' ? renderCommunityChoropleth() : renderIncidentChoropleth();
-  // Layer order: choropleth → conservation → station boundaries → labels
+  // Layer order: choropleth → conservation → dim overlay → station boundaries → ESZ labels → station dots
   if (conservationLayer && showConservation) conservationLayer.bringToFront();
-  if (stationBoundaryLayer) stationBoundaryLayer.bringToFront();
+  bringStationLayersToFront();
 }
 
 function renderCommunityChoropleth() {
@@ -689,30 +890,48 @@ function renderCommunityChoropleth() {
                : isYear ? equalWidthBreaks(vals, 5)
                :          quantileBreaks(vals, 5);
 
-  const fc = activeStation === 'ALL' ? ESZ_GEOJSON
-    : {...ESZ_GEOJSON, features: ESZ_GEOJSON.features.filter(f => (f.properties.StationID || f.properties.station_id) === activeStation)};
+  // Always render all ESZs — dim those outside the selected station
+  const fc = ESZ_GEOJSON;
 
   choroplethLayer = L.geoJSON(fc, {
     style: feat => {
+      const sid        = feat.properties.StationID || feat.properties.station_id;
+      const inStation  = activeStation === 'ALL' || sid === activeStation;
       const raw = parseFloat(feat.properties[metric]);
       const val = isYear ? (CURRENT_YEAR - raw) : raw;
+      const c   = communityColor(val, breaks, ramp);
+      const borderColor = isLightMode ? '#00000030' : '#ffffff50';
+      if (!inStation) {
+        // Dim ESZs outside the selected station
+        return {
+          fillColor:   isLightMode ? '#c8cce0' : '#1a1a2e',
+          fillOpacity: isLightMode ? 0.6 : 0.7,
+          color: borderColor, weight:0.4, opacity:0.5,
+        };
+      }
       return {
-        fillColor:   communityColor(val, breaks, ramp),
-        fillOpacity: 1.0, color:'#ffffff', weight:0.5, opacity:0.3,
+        fillColor:   c.color,
+        fillOpacity: c.opacity,
+        color: borderColor, weight:0.5, opacity:1,
       };
     },
     onEachFeature: (feat, layer) => {
+      const sid       = feat.properties.StationID || feat.properties.station_id;
+      const inStation = activeStation === 'ALL' || sid === activeStation;
+      if (!inStation) return; // dimmed ESZs — no interaction
       layer.on({
         mouseover: e => {
           if (!windowFocused) return;
-          e.target.setStyle({weight:2, color:'#ffffff', opacity:1});
+          const borderColor = isLightMode ? '#000000' : '#ffffff';
+          e.target.setStyle({weight:2, color:borderColor, opacity:1});
           e.target.bringToFront();
         },
         mouseout: e => {
           const isActive = activeESZ && feat.properties.ESZ_ID === activeESZ;
+          const borderColor = isLightMode ? '#00000030' : '#ffffff50';
           e.target.setStyle(isActive
-            ? {weight:2, color:'#fff', opacity:1}
-            : {weight:0.5, color:'#ffffff', opacity:0.3}
+            ? {weight:2, color: isLightMode ? '#000' : '#fff', opacity:1}
+            : {weight:0.5, color:borderColor, opacity:1}
           );
         },
         click: () => selectESZ(feat.properties),
@@ -737,32 +956,43 @@ function renderIncidentChoropleth() {
   });
   const cuts       = computeEqualWidthCuts(counts, N_BANDS);
   const bandColors = buildBandColors(activeRisk, N_BANDS);
-  const fc = activeStation === 'ALL' ? ESZ_GEOJSON
-    : {...ESZ_GEOJSON, features: ESZ_GEOJSON.features.filter(f => (f.properties.StationID || f.properties.station_id) === activeStation)};
+  const fc = ESZ_GEOJSON; // always render all ESZs
 
   choroplethLayer = L.geoJSON(fc, {
     style: feat => {
+      const sid       = feat.properties.StationID || feat.properties.station_id;
+      const inStation = activeStation === 'ALL' || sid === activeStation;
+      const borderColor = isLightMode ? '#00000030' : '#ffffff50';
+      if (!inStation) {
+        return {
+          fillColor:   isLightMode ? '#c8cce0' : '#1a1a2e',
+          fillOpacity: isLightMode ? 0.6 : 0.7,
+          color: borderColor, weight: 0.4, opacity: 0.5,
+        };
+      }
       const e     = ESZ_COUNTS[feat.properties.ESZ_ID];
       const count = e ? (parseInt(e[col]) || 0) : 0;
-      return {
-        fillColor:   incidentColor(count, cuts, bandColors),
-        fillOpacity: 1.0, color:'#ffffff', weight:0.5, opacity:0.3,
-      };
+      const fs    = incidentFillStyle(count, cuts, bandColors);
+      return { ...fs, color: borderColor, weight: 0.5, opacity: 1 };
     },
     onEachFeature: (feat, layer) => {
+      const sid       = feat.properties.StationID || feat.properties.station_id;
+      const inStation = activeStation === 'ALL' || sid === activeStation;
+      if (!inStation) return; // dimmed — no interaction
       const e     = ESZ_COUNTS[feat.properties.ESZ_ID];
       const count = e ? (parseInt(e[col]) || 0) : 0;
       layer.on({
         mouseover: ev => {
           if (!windowFocused) return;
-          ev.target.setStyle({weight:2, color:'#ffffff', opacity:1});
+          ev.target.setStyle({ weight:2, color: isLightMode ? '#000' : '#fff', opacity:1 });
           ev.target.bringToFront();
         },
         mouseout: ev => {
           const isActive = activeESZ && feat.properties.ESZ_ID === activeESZ;
+          const borderColor = isLightMode ? '#00000030' : '#ffffff50';
           ev.target.setStyle(isActive
-            ? {weight:2, color:'#fff', opacity:1}
-            : {weight:0.5, color:'#ffffff', opacity:0.3}
+            ? { weight:2, color: isLightMode ? '#000' : '#fff', opacity:1 }
+            : { weight:0.5, color: borderColor, opacity:1 }
           );
         },
         click: () => selectESZIncident(feat.properties, count),
@@ -788,29 +1018,40 @@ function showStationOverview(sid) {
   if (activeMode === 'incident') { showIncidentStationOverview(sid); return; }
   if (activeMode === 'coverage') { showCoverageOverview(); return; }
 
-  const stations = sid === 'ALL' ? Object.values(STATION_SUMS) : [s];
-  const totPop   = stations.reduce((a,st)=>a+(st?.est_population||0),0);
-  const totUnits = stations.reduce((a,st)=>a+(st?.total_units||0),0);
-  const totEszs  = stations.reduce((a,st)=>a+(st?.esz_count||0),0);
+  const stations  = sid === 'ALL' ? Object.values(STATION_SUMS) : [s];
+  const totEszs   = stations.reduce((a,st)=>a+(st?.esz_count||0),0);
+  const totPop    = stations.reduce((a,st)=>a+(st?.est_population||0),0);
+  const totSqMi   = stations.reduce((a,st)=>a+(st?.sq_miles||0),0);
+  const totRes    = stations.reduce((a,st)=>a+(st?.residential_units||0),0);
+  const totComm   = stations.reduce((a,st)=>a+(st?.commercial_units||0),0);
+  const totRetail = stations.reduce((a,st)=>a+(st?.retail_units||0),0);
 
   document.getElementById('sidebar-body').innerHTML = `
     <div class="sec-hdr">Jurisdiction Summary</div>
     <table class="kv-table">
       <tr><td>Total ESZs</td><td>${totEszs.toLocaleString()}</td></tr>
       <tr><td>Est. Population</td><td>${totPop.toLocaleString()}</td></tr>
-      <tr><td>Total Units</td><td>${totUnits.toLocaleString()}</td></tr>
+      <tr><td>Sq Miles</td><td>${totSqMi.toFixed(2)}</td></tr>
+      <tr><td>Residential Units</td><td>${totRes.toLocaleString()}</td></tr>
+      <tr><td>Commercial Units</td><td>${totComm.toLocaleString()}</td></tr>
+      <tr><td>Retail Units</td><td>${totRetail.toLocaleString()}</td></tr>
     </table>
     <div class="sec-hdr">By Station</div>
-    ${stations.map(st=>`
-      <div class="station-card" onclick="filterStation('${st.StationID}')">
+    ${stations.map(st => {
+      const c = STATION_COLORS[st.StationID] || 'var(--accent)';
+      return `
+      <div class="station-card" style="border-left-color:${c}" onclick="filterStation('${st.StationID}')">
         <div class="sc-head">${st.StationID}</div>
         <div class="sc-kv">
           <div class="sc-kv-item"><div class="sc-kv-lbl">ESZs</div><div class="sc-kv-val">${st.esz_count}</div></div>
-          <div class="sc-kv-item"><div class="sc-kv-lbl">Population</div><div class="sc-kv-val">${st.est_population.toLocaleString()}</div></div>
-          <div class="sc-kv-item"><div class="sc-kv-lbl">Units</div><div class="sc-kv-val">${st.total_units.toLocaleString()}</div></div>
+          <div class="sc-kv-item"><div class="sc-kv-lbl">Pop.</div><div class="sc-kv-val">${st.est_population.toLocaleString()}</div></div>
+          <div class="sc-kv-item"><div class="sc-kv-lbl">Sq Mi</div><div class="sc-kv-val">${(st.sq_miles||0).toFixed(2)}</div></div>
+          <div class="sc-kv-item"><div class="sc-kv-lbl">Res Units</div><div class="sc-kv-val">${(st.residential_units||0).toLocaleString()}</div></div>
+          <div class="sc-kv-item"><div class="sc-kv-lbl">Comm Units</div><div class="sc-kv-val">${(st.commercial_units||0).toLocaleString()}</div></div>
+          <div class="sc-kv-item"><div class="sc-kv-lbl">Retail Units</div><div class="sc-kv-val">${(st.retail_units||0).toLocaleString()}</div></div>
         </div>
-      </div>
-    `).join('')}
+      </div>`;
+    }).join('')}
     <div style="margin-top:8px;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;font-size:13px;color:var(--muted)">
       Click a station card or any ESZ polygon to explore.
     </div>
@@ -905,10 +1146,15 @@ function selectESZ(props) {
       const isActive = p.ESZ_ID === activeESZ;
       const raw = parseFloat(p[metric]);
       const val = isYear ? (CURRENT_YEAR - raw) : raw;
-      l.setStyle(isActive
-        ? {weight:2, color:'#fff', opacity:1, fillOpacity:1.0, fillColor: communityColor(val, breaks, ramp)}
-        : {weight:0.5, color:'#ffffff', opacity:0.3, fillOpacity:1.0, fillColor: communityColor(val, breaks, ramp)}
-      );
+      const c   = communityColor(val, breaks, ramp);
+      const borderColor = isLightMode ? '#00000030' : '#ffffff50';
+      l.setStyle({
+        fillColor:   c.color,
+        fillOpacity: c.opacity,
+        weight:      isActive ? 2 : 0.5,
+        color:       isActive ? (isLightMode ? '#000' : '#fff') : borderColor,
+        opacity:     1,
+      });
       if (isActive) l.bringToFront();
     });
   }
@@ -992,16 +1238,17 @@ function selectESZIncident(props, count) {
     const cuts       = computeEqualWidthCuts(counts, N_BANDS);
     const bandColors = buildBandColors(activeRisk, N_BANDS);
     choroplethLayer.eachLayer(l => {
-      const p     = l.feature.properties;
-      const e     = ESZ_COUNTS?.[p.ESZ_ID];
-      const cnt   = e ? (parseInt(e[col])||0) : 0;
+      const p        = l.feature.properties;
+      const e        = ESZ_COUNTS?.[p.ESZ_ID];
+      const cnt      = e ? (parseInt(e[col])||0) : 0;
       const isActive = p.ESZ_ID === activeESZ;
+      const fs       = incidentFillStyle(cnt, cuts, bandColors);
+      const borderColor = isLightMode ? '#00000030' : '#ffffff50';
       l.setStyle({
-        weight:      isActive ? 2 : 0.5,
-        color:       '#ffffff',
-        opacity:     isActive ? 1 : 0.3,
-        fillOpacity: 1.0,
-        fillColor:   incidentColor(cnt, cuts, bandColors),
+        ...fs,
+        weight:  isActive ? 2 : 0.5,
+        color:   isActive ? (isLightMode ? '#000' : '#fff') : borderColor,
+        opacity: 1,
       });
       if (isActive) l.bringToFront();
     });
@@ -1184,23 +1431,29 @@ function renderCoverageLayer() {
 // ── ESZ VIEW ──────────────────────────────────────────────────────────────
 // Choropleth of ESZ polygons colored by cov_{mph}mph_{min}min (0→1 fraction).
 // Yellow ramp: dark at 0%, bright at 100%. One time + one MPH selected at a time.
-const ESZ_COV_RAMP = [
-  '#1a1400','#3d3000','#736000','#a88c00','#ddb800','#ffdd00',
-];
+// ESZ coverage ramp: 0% coverage = near transparent, 100% = fully saturated teal-blue
+// Using rgba so the underlying map shows through at low coverage
+const ESZ_COV_COLOR = '#2e6da4';  // muted steel blue
+const ESZ_COV_OPACITIES = [0.04, 0.18, 0.36, 0.56, 0.76, 0.95];
+
+function eszCovColor(fraction) {
+  if (fraction === null || fraction === undefined || isNaN(fraction) || fraction <= 0)
+    return 'rgba(128,128,128,0.06)';
+  const clamped = Math.max(0, Math.min(1, fraction));
+  // Interpolate opacity across the ramp
+  const scaled = clamped * (ESZ_COV_OPACITIES.length - 1);
+  const lo = Math.floor(scaled);
+  const hi = Math.min(lo + 1, ESZ_COV_OPACITIES.length - 1);
+  const t  = scaled - lo;
+  const op = ESZ_COV_OPACITIES[lo] + (ESZ_COV_OPACITIES[hi] - ESZ_COV_OPACITIES[lo]) * t;
+  const r = parseInt(ESZ_COV_COLOR.slice(1,3),16);
+  const g = parseInt(ESZ_COV_COLOR.slice(3,5),16);
+  const b = parseInt(ESZ_COV_COLOR.slice(5,7),16);
+  return `rgba(${r},${g},${b},${op.toFixed(3)})`;
+}
 
 function eszCovKey() {
   return `cov_${activeCovMPH}mph_${activeCovDriveTime}min`;
-}
-
-function eszCovColor(fraction) {
-  if (fraction === null || fraction === undefined || isNaN(fraction)) return ESZ_COV_RAMP[0];
-  // Map 0–1 onto 6 ramp stops
-  const idx = fraction <= 0 ? 0 : Math.min(Math.floor(fraction * (ESZ_COV_RAMP.length - 1) + 0.5), ESZ_COV_RAMP.length - 1);
-  // Smooth: lerp between two adjacent stops
-  const scaled = fraction * (ESZ_COV_RAMP.length - 1);
-  const lo = Math.floor(scaled), hi = Math.min(lo + 1, ESZ_COV_RAMP.length - 1);
-  const t  = scaled - lo;
-  return lerpHex(ESZ_COV_RAMP[lo], ESZ_COV_RAMP[hi], t);
 }
 
 function renderCoverageESZ() {
@@ -1241,12 +1494,13 @@ function renderCoverageESZ() {
   isochroneLayer = L.geoJSON({ type:'FeatureCollection', features: renderFeatures }, {
     style: feat => {
       const val = feat.properties._covVal;
+      const borderColor = isLightMode ? '#00000030' : '#ffffff50';
       return {
         fillColor:   eszCovColor(val),
-        fillOpacity: 1.0,
-        color:       '#ffffff',
+        fillOpacity: 1,
+        color:       borderColor,
         weight:      0.5,
-        opacity:     0.3,
+        opacity:     1,
       };
     },
     onEachFeature: (feat, layer) => {
@@ -1271,8 +1525,7 @@ function renderCoverageESZ() {
     }
   }).addTo(map);
 
-  if (stationBoundaryLayer) stationBoundaryLayer.bringToFront();
-  if (stationLabelLayer)    stationLabelLayer.eachLayer(l => l.bringToFront?.());
+  bringStationLayersToFront();
 
   buildCoverageLegendESZCov();
 }
@@ -1345,8 +1598,7 @@ function renderCoveragePolygons() {
     }
   }).addTo(map);
 
-  if (stationBoundaryLayer) stationBoundaryLayer.bringToFront();
-  if (stationLabelLayer)    stationLabelLayer.eachLayer(l => l.bringToFront?.());
+  bringStationLayersToFront();
 
   buildCoverageLegendPolygons(features);
 }
@@ -1454,8 +1706,7 @@ function renderCoverageRoads() {
     }
   }).addTo(map);
 
-  if (stationBoundaryLayer) stationBoundaryLayer.bringToFront();
-  if (stationLabelLayer)    stationLabelLayer.eachLayer(l => l.bringToFront?.());
+  bringStationLayersToFront();
 
   buildCoverageLegendRoads(segments);
 }
@@ -1508,15 +1759,17 @@ function buildCoverageLegendESZCov() {
   const mph = activeCovMPH, dt = activeCovDriveTime;
   document.getElementById('legend-title').innerHTML =
     `ESZ Coverage&nbsp;·&nbsp;<span style="color:var(--accent)">${mph} mph · ${dt} min</span>`;
-  // Use the exact ramp stops so swatches match what's on the map
-  const stops = ESZ_COV_RAMP.map((color, i) => {
-    const frac = i / (ESZ_COV_RAMP.length - 1);
-    const pct  = Math.round(frac * 100);
+  const r = parseInt(ESZ_COV_COLOR.slice(1,3),16);
+  const g = parseInt(ESZ_COV_COLOR.slice(3,5),16);
+  const b = parseInt(ESZ_COV_COLOR.slice(5,7),16);
+  const stops = ESZ_COV_OPACITIES.map((op, i) => {
+    const pct   = Math.round((i / (ESZ_COV_OPACITIES.length - 1)) * 100);
+    const color = op < 0.08 ? 'rgba(128,128,128,0.10)' : `rgba(${r},${g},${b},${op})`;
     return `<div class="legend-row">
-      <div class="legend-swatch" style="background:${color}"></div>
+      <div class="legend-swatch" style="background:${color};border:1px solid rgba(128,128,128,0.2)"></div>
       <span>${pct}%</span>
     </div>`;
-  }).reverse(); // 100% at top
+  }).reverse();
   document.getElementById('legend-rows').innerHTML = stops.join('');
 }
 
@@ -1740,7 +1993,7 @@ function showCoverageESZOverview() {
       <tr><td>Station</td><td>${stLabel}</td></tr>
       <tr><td>ESZs Evaluated</td><td><span class="kv-val-lg">${vals.length}</span></td></tr>
       <tr><td>Avg Coverage</td><td><span class="kv-val-lg" style="color:${eszCovColor(avg)}">${(avg*100).toFixed(1)}%</span></td></tr>
-      <tr><td>Full Coverage (100%)</td><td style="color:${ESZ_COV_RAMP[5]};font-weight:700">${full}</td></tr>
+      <tr><td>Full Coverage (100%)</td><td style="color:${ESZ_COV_COLOR};font-weight:700">${full}</td></tr>
       <tr><td>Partial Coverage</td><td>${part}</td></tr>
       <tr><td>No Coverage</td><td style="color:var(--muted)">${none}</td></tr>
     </table>
@@ -1804,6 +2057,306 @@ function showCoverageESZDetail(props, covVal) {
       <button class="btn-sec" onclick="showCoverageOverview()">← Overview</button>
       <button class="btn-pri" onclick="exportPDF()">⬇ PDF · Coverage</button>
     </div>`;
+}
+
+// ── TARGET HAZARDS ────────────────────────────────────────────────────────
+
+function clearHazardsLayer() {
+  if (hazardsLayer) { map.removeLayer(hazardsLayer); hazardsLayer = null; }
+}
+
+function hazardColor(cat) {
+  return (HAZARD_CAT_CONFIG[cat] || HAZARD_CAT_CONFIG.all).color;
+}
+
+function buildHazardsCatTabs() {
+  const wrap = document.getElementById('hazards-controls');
+  if (!wrap) return;
+
+  const visible = HAZARD_CAMPUSES.filter(c =>
+    activeStation === 'ALL' || c.StationID === activeStation
+  );
+  const presentCats = new Set(visible.map(c => c.cat));
+  const orderedCats = ['all', ...Object.keys(HAZARD_CAT_CONFIG).filter(c => c !== 'all' && presentCats.has(c))];
+
+  wrap.innerHTML = orderedCats.map(cat => {
+    const cfg = HAZARD_CAT_CONFIG[cat];
+    return `<button class="hz-cat-tab${activeHazardCat === cat ? ' active' : ''}"
+      data-cat="${cat}" onclick="selectHazardCat('${cat}')">${cfg.icon} ${cfg.label}</button>`;
+  }).join('');
+}
+
+function selectHazardCat(cat) {
+  activeHazardCat    = cat;
+  activeHazardCampus = null;
+  document.querySelectorAll('.hz-cat-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.cat === cat)
+  );
+  renderHazardsLayer();
+  showHazardsOverview();
+}
+
+function renderHazardsLayer() {
+  clearHazardsLayer();
+  if (!HAZARD_CAMPUSES.length) return;
+
+  const filtered = HAZARD_CAMPUSES.filter(c => {
+    const matchesCat = activeHazardCat === 'all' || c.cat === activeHazardCat;
+    const matchesStn = activeStation === 'ALL' || c.StationID === activeStation;
+    return matchesCat && matchesStn;
+  });
+
+  hazardsLayer = L.layerGroup();
+
+  filtered.forEach(campus => {
+    const col  = hazardColor(campus.cat);
+    const cfg  = HAZARD_CAT_CONFIG[campus.cat] || HAZARD_CAT_CONFIG.all;
+    const flow = campus.totalFlow;
+    // Radius based on total campus fire flow
+    const radius = flow > 20000 ? 11 : flow > 10000 ? 9 : flow > 4000 ? 7 : 5;
+    const multi  = campus.buildings.length > 1;
+
+    const sprinkIcon = campus.sprinkStatus === 'Full'    ? '💧 Full'
+                     : campus.sprinkStatus === 'Partial' ? '💧 Partial'
+                     : '🚫 None';
+
+    const marker = L.circleMarker([campus.lat, campus.lng], {
+      radius,
+      fillColor:   col,
+      color:       multi ? '#fff' : '#fff',
+      weight:      multi ? 2.5 : 1.5,
+      dashArray:   multi ? null : null,
+      opacity:     1,
+      fillOpacity: 0.88,
+    });
+
+    marker.bindTooltip(
+      `<div style="font-family:'Barlow Condensed',sans-serif;font-size:13px;font-weight:700;color:${col}">${campus.name}</div>
+       <div style="font-size:12px;color:#aaa;margin-top:1px">${campus.address}, ${campus.city}</div>
+       <div style="font-size:12px;color:#ccc;margin-top:3px">${cfg.icon} ${cfg.label}${multi ? ' · ' + campus.buildings.length + ' bldgs' : ''} · ${flow.toLocaleString()} GPM</div>
+       <div style="font-size:11px;color:#999;margin-top:1px">${sprinkIcon}</div>`,
+      { sticky: true, className: 'hz-popup', offset: [8, 0] }
+    );
+
+    marker.on('click', () => showCampusDetail(campus));
+    hazardsLayer.addLayer(marker);
+  });
+
+  hazardsLayer.addTo(map);
+  bringStationLayersToFront();
+  renderHazardsLegend();
+
+  if (filtered.length) {
+    const pts = filtered.map(c => [c.lat, c.lng]);
+    const bounds = L.latLngBounds(pts);
+    if (bounds.isValid()) map.fitBounds(bounds, { padding:[40,40] });
+  }
+}
+
+function renderHazardsLegend() {
+  const legendTitle = document.getElementById('legend-title');
+  const legendRows  = document.getElementById('legend-rows');
+  if (!legendTitle || !legendRows) return;
+
+  legendTitle.textContent = 'Required Fire Flow';
+  legendRows.innerHTML = `
+    <div class="legend-row"><svg width="22" height="22"><circle cx="11" cy="11" r="11" fill="#888" opacity=".88"/></svg><span>&gt; 20,000 GPM</span></div>
+    <div class="legend-row"><svg width="18" height="18"><circle cx="9" cy="9" r="9" fill="#888" opacity=".88"/></svg><span>10,001 – 20,000 GPM</span></div>
+    <div class="legend-row"><svg width="14" height="14"><circle cx="7" cy="7" r="7" fill="#888" opacity=".88"/></svg><span>4,001 – 10,000 GPM</span></div>
+    <div class="legend-row"><svg width="10" height="10"><circle cx="5" cy="5" r="5" fill="#888" opacity=".88"/></svg><span>≤ 4,000 GPM</span></div>
+  `;
+}
+
+function showHazardsOverview() {
+  if (!HAZARD_CAMPUSES.length) {
+    document.getElementById('sidebar-title').textContent = 'Target Hazards';
+    document.getElementById('sidebar-sub').textContent   = 'Data unavailable';
+    document.getElementById('sidebar-body').innerHTML    =
+      '<div class="empty-state"><div class="empty-icon">⚠</div><div class="empty-title">No Data</div>' +
+      '<div>flowmsp_high_hazard.geojson not found in /data/</div></div>';
+    return;
+  }
+
+  const allCampuses = HAZARD_CAMPUSES.filter(c =>
+    activeStation === 'ALL' || c.StationID === activeStation
+  );
+  const visCampuses = allCampuses.filter(c =>
+    activeHazardCat === 'all' || c.cat === activeHazardCat
+  );
+
+  document.getElementById('sidebar-title').textContent = 'Target Hazards';
+  document.getElementById('sidebar-sub').textContent =
+    `${visCampuses.length} sites · ${activeStation === 'ALL' ? 'All Stations' : activeStation}`;
+
+  // Category count cards
+  const cats = Object.keys(HAZARD_CAT_CONFIG).filter(c => c !== 'all');
+  const countCards = cats.map(cat => {
+    const cfg   = HAZARD_CAT_CONFIG[cat];
+    const count = allCampuses.filter(c => c.cat === cat).length;
+    if (!count) return '';
+    return `<div class="hz-count-card${activeHazardCat === cat ? ' hz-count-active' : ''}"
+        style="border-left-color:${cfg.color}" onclick="selectHazardCat('${cat}')">
+      <div class="hz-count-val" style="color:${cfg.color}">${count}</div>
+      <div class="hz-count-lbl">${cfg.icon} ${cfg.label}</div>
+    </div>`;
+  }).join('');
+
+  // Aggregate stats
+  const totalFlow   = visCampuses.reduce((s, c) => s + c.totalFlow, 0);
+  const fullSprink  = visCampuses.filter(c => c.sprinkStatus === 'Full').length;
+  const partSprink  = visCampuses.filter(c => c.sprinkStatus === 'Partial').length;
+  const totalAnnot  = visCampuses.reduce((s, c) => s + c.totalAnnot, 0);
+  const totalBldgs  = visCampuses.reduce((s, c) => s + c.buildings.length, 0);
+
+  // Top sites by totalFlow
+  const topSites = [...visCampuses]
+    .sort((a, b) => b.totalFlow - a.totalFlow)
+    .slice(0, 8);
+
+  const siteCardsHtml = topSites.map(campus => {
+    const col  = hazardColor(campus.cat);
+    const cfg  = HAZARD_CAT_CONFIG[campus.cat] || {};
+    const flow = campus.totalFlow ? campus.totalFlow.toLocaleString() + ' GPM' : '—';
+    const sprk = campus.sprinkStatus === 'Full' ? '💧 Full' : campus.sprinkStatus === 'Partial' ? '💧 Partial' : '🚫 None';
+    const bldgLabel = campus.buildings.length > 1 ? `${campus.buildings.length} bldgs` : '1 bldg';
+    return `<div class="hz-card" style="border-left-color:${col}" onclick="showCampusDetail(HZ_CAMPUS_BY_ID['${campus.parent_id}'])">
+      <div class="hz-card-name">${campus.name}</div>
+      <div class="hz-card-addr">${campus.address}, ${campus.city}</div>
+      <div class="hz-card-pills">
+        <span class="hz-pill" style="color:${col}">${cfg.icon || ''} ${cfg.label || campus.cat}</span>
+        <span class="hz-pill" style="color:var(--muted)">${flow}</span>
+        <span class="hz-pill" style="color:var(--muted)">${sprk}</span>
+        <span class="hz-pill" style="color:var(--muted)">${bldgLabel}</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('sidebar-body').innerHTML = `
+    <div class="sec-hdr">By Occupancy</div>
+    <div class="hz-overview-counts">${countCards}</div>
+    <div class="sec-hdr">Summary</div>
+    <div class="hz-stat-grid">
+      <div class="hz-stat">
+        <div class="hz-stat-val" style="color:var(--accent)">${(totalFlow/1000).toFixed(0)}K</div>
+        <div class="hz-stat-lbl">Total GPM</div>
+      </div>
+      <div class="hz-stat">
+        <div class="hz-stat-val" style="color:#2e9e52">${fullSprink}<span style="font-size:14px;color:var(--muted)"> + ${partSprink}p</span></div>
+        <div class="hz-stat-lbl">Sprinklered</div>
+      </div>
+      <div class="hz-stat">
+        <div class="hz-stat-val" style="color:#c97a1a">${totalAnnot}</div>
+        <div class="hz-stat-lbl">Annotations</div>
+      </div>
+      <div class="hz-stat">
+        <div class="hz-stat-val" style="color:var(--muted)">${totalBldgs}</div>
+        <div class="hz-stat-lbl">Buildings</div>
+      </div>
+    </div>
+    <div class="sec-hdr">Highest Flow${activeHazardCat !== 'all' ? ' · ' + (HAZARD_CAT_CONFIG[activeHazardCat]?.label || activeHazardCat) : ''}</div>
+    ${siteCardsHtml}
+    <div style="margin-top:8px;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;font-size:13px;color:var(--muted)">
+      Click a marker or site card to view pre-plan details.
+    </div>`;
+}
+
+// Lookup map so overview cards can reference campuses by parent_id
+const HZ_CAMPUS_BY_ID = {};
+const _origBuildCampuses = buildHazardCampuses;
+// Patch to also populate lookup after build
+function buildHazardCampuses() {
+  if (!TARGET_HAZARDS_GEO) return;
+  const groups = {};
+  TARGET_HAZARDS_GEO.features.forEach(feat => {
+    const pid = feat.properties.parent_id;
+    if (!groups[pid]) groups[pid] = [];
+    groups[pid].push(feat);
+  });
+
+  HAZARD_CAMPUSES = Object.entries(groups).map(([pid, buildings]) => {
+    const primary    = buildings[0].properties;
+    const cat        = getCampusCat(buildings);
+    const totalFlow  = buildings.reduce((s, f) => s + (f.properties.required_flow || 0), 0);
+    const anySprink  = buildings.some(f => f.properties.sprinklered && f.properties.sprinklered !== 'None');
+    const allSprink  = buildings.every(f => f.properties.sprinklered && f.properties.sprinklered !== 'None');
+    const sprinkStatus = allSprink ? 'Full' : anySprink ? 'Partial' : 'None';
+    const totalAnnot = buildings.reduce((s, f) => s + (f.properties.image_annotations || 0), 0);
+    const maxHydrants = Math.max(...buildings.map(f => f.properties.hydrant_count || 0));
+    const [lng, lat] = buildings[0].geometry.coordinates;
+    const campus = { parent_id: pid, name: primary.name, address: primary.address,
+      city: primary.city, zip: primary.zip, StationID: primary.StationID,
+      ESZ_ID: primary.ESZ_ID, cat, buildings, totalFlow, sprinkStatus,
+      totalAnnot, maxHydrants, lat, lng };
+    HZ_CAMPUS_BY_ID[pid] = campus;
+    return campus;
+  });
+}
+
+function showCampusDetail(campus) {
+  if (!campus) return;
+  const col     = hazardColor(campus.cat);
+  const cfg     = HAZARD_CAT_CONFIG[campus.cat] || {};
+  const stColor = STATION_COLORS[campus.StationID] || 'var(--accent)';
+
+  document.getElementById('sidebar-title').textContent = campus.name;
+  document.getElementById('sidebar-sub').textContent   = (cfg.icon || '') + ' ' + (cfg.label || campus.cat);
+
+  const sprinkColor = campus.sprinkStatus === 'Full'    ? '#2e9e52'
+                    : campus.sprinkStatus === 'Partial'  ? '#c97a1a'
+                    : '#c0392b';
+
+  // Per-building table rows
+  const bldgRows = campus.buildings
+    .sort((a, b) => (b.properties.required_flow || 0) - (a.properties.required_flow || 0))
+    .map(f => {
+      const p   = f.properties;
+      const sc  = p.sprinklered && p.sprinklered !== 'None' ? '#2e9e52' : '#c0392b';
+      const sprk = p.sprinklered && p.sprinklered !== 'None' ? '💧' : '🚫';
+      const lot  = p.lot_number || '—';
+      const flow = p.required_flow ? p.required_flow.toLocaleString() : '—';
+      return `<tr>
+        <td style="font-size:12px;font-weight:600">${lot}</td>
+        <td style="font-size:12px;color:var(--muted)">${p.occupancy_type || '—'}</td>
+        <td style="text-align:right;font-size:12px;font-weight:700;color:${col}">${flow}</td>
+        <td style="text-align:center"><span style="color:${sc}">${sprk}</span></td>
+      </tr>`;
+    }).join('');
+
+  document.getElementById('sidebar-body').innerHTML = `
+    <div class="hz-stat-grid">
+      <div class="hz-stat">
+        <div class="hz-stat-val" style="color:${col}">${campus.totalFlow.toLocaleString()}</div>
+        <div class="hz-stat-lbl">Total GPM</div>
+      </div>
+      <div class="hz-stat">
+        <div class="hz-stat-val" style="color:${sprinkColor}">${campus.sprinkStatus}</div>
+        <div class="hz-stat-lbl">Sprinkler</div>
+      </div>
+    </div>
+    <div class="sec-hdr">Location</div>
+    <table class="kv-table">
+      <tr><td>Address</td><td>${campus.address}, ${campus.city} ${campus.zip || ''}</td></tr>
+      <tr><td>ESZ</td><td><span class="kv-val-lg">${campus.ESZ_ID || '—'}</span></td></tr>
+      <tr><td>Station</td><td><span style="color:${stColor};font-weight:700;font-family:var(--font-h);font-size:16px">${campus.StationID || '—'}</span></td></tr>
+      <tr><td>Hydrants</td><td><span style="font-weight:700">${campus.maxHydrants}</span></td></tr>
+    </table>
+    <div class="sec-hdr">Pre-Plan · ${campus.totalAnnot} Annotations</div>
+    <div class="sec-hdr" style="margin-top:6px">Buildings (${campus.buildings.length})</div>
+    <table class="kv-table" style="font-size:13px">
+      <thead><tr style="border-bottom:1px solid var(--border)">
+        <th style="text-align:left;padding:4px 0;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">Building</th>
+        <th style="text-align:left;padding:4px 0;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">Use</th>
+        <th style="text-align:right;padding:4px 0;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">GPM</th>
+        <th style="text-align:center;padding:4px 0;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">💧</th>
+      </tr></thead>
+      <tbody>${bldgRows}</tbody>
+    </table>
+    <div class="action-row">
+      <button class="btn-sec" onclick="showHazardsOverview()">← Overview</button>
+      <button class="btn-pri" onclick="map.setView([${campus.lat},${campus.lng}],16,{animate:true})">🔍 Zoom To</button>
+    </div>`;
+
+  map.setView([campus.lat, campus.lng], Math.max(map.getZoom(), 15), { animate: true });
 }
 
 // ── BOOT ──────────────────────────────────────────────────────────────────

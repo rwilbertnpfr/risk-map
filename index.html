@@ -28,6 +28,7 @@
       <button class="mode-pill active" id="mode-community" onclick="setMode('community')">Community</button>
       <button class="mode-pill"        id="mode-incident"  onclick="setMode('incident')">Incident Risk</button>
       <button class="mode-pill"        id="mode-coverage"  onclick="setMode('coverage')">Coverage</button>
+      <button class="mode-pill"        id="mode-hazards"   onclick="setMode('hazards')">Target Hazards</button>
     </div>
 
     <div class="hdr-sep"></div>
@@ -78,16 +79,28 @@
     <!-- Coverage mode: view + sub tabs -->
     <div class="coverage-view-tabs" id="coverage-view-tabs"></div>
     <div class="coverage-sub-tabs" id="coverage-sub-tabs"></div>
-    <!-- Always visible: Parks/Conservation toggle (floats right) -->
-    <label class="layer-toggle" id="conservation-control">
-      <input type="checkbox" id="conservation-toggle" checked onchange="toggleConservationLayer(this.checked)">
-      <span class="layer-toggle-label">Parks / Conservation</span>
-    </label>
+    <!-- Target Hazards mode: occupancy category filter tabs -->
+    <div id="hazards-controls"></div>
+    <!-- Always visible: Parks/Conservation toggle + theme toggle (float right) -->
+    <div id="conservation-control">
+      <label class="layer-toggle">
+        <input type="checkbox" id="conservation-toggle" checked onchange="toggleConservationLayer(this.checked)">
+        <span class="layer-toggle-label">Parks / Conservation</span>
+      </label>
+      <div class="subhdr-sep"></div>
+      <div class="theme-switch" onclick="toggleTheme()" title="Toggle light/dark mode">
+        <div class="theme-switch-track">
+          <div class="theme-switch-thumb" id="theme-thumb">🌙</div>
+        </div>
+        <span class="theme-switch-label" id="theme-label">Dark Mode</span>
+      </div>
+    </div>
   </div>
 
   <!-- ── MAP ── -->
   <div id="map-wrap">
     <div id="map"></div>
+    <div id="station-badge" style="display:none"></div>
     <div id="legend">
       <div class="legend-title" id="legend-title">Est. Population</div>
       <div id="legend-rows"></div>
