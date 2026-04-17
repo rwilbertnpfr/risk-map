@@ -29,10 +29,18 @@
       <button class="mode-pill"        id="mode-incident"  onclick="setMode('incident')">Incident Risk</button>
       <button class="mode-pill"        id="mode-coverage"  onclick="setMode('coverage')">Coverage</button>
     </div>
-    <div class="hdr-sep"></div>
 
+    <div class="hdr-sep"></div>
+    <div class="station-pills" id="station-pills"></div>
+    <div class="hdr-sep"></div>
+    <button id="export-btn" onclick="exportPDF()">⬇ Export PDF</button>
+    <div id="synthetic-badge">Synthetic Data</div>
+  </header>
+
+  <!-- ── SUB HEADER — metric select / program + risk tabs / coverage tabs / parks toggle ── -->
+  <div id="subheader">
+    <!-- Community mode: metric dropdown -->
     <div id="community-controls">
-      <span class="hdr-label">Community</span>
       <select id="metric-select">
         <optgroup label="Population">
           <option value="est_population">Est. Population</option>
@@ -61,30 +69,20 @@
         </optgroup>
       </select>
     </div>
-
+    <!-- Incident mode: program + risk tabs -->
     <div id="incident-controls">
-      <span class="hdr-label">Incident Risk</span>
       <div id="fy-badge">—</div>
     </div>
-
-    <div id="coverage-controls">
-      <span class="hdr-label">Coverage</span>
-    </div>
-
-    <div class="hdr-sep"></div>
-    <span class="hdr-label">Station</span>
-    <div class="station-pills" id="station-pills"></div>
-    <div class="hdr-sep"></div>
-    <button id="export-btn" onclick="exportPDF()">⬇ Export PDF</button>
-    <div id="synthetic-badge">Synthetic Data</div>
-  </header>
-
-  <!-- ── SUB HEADER — program + risk level tabs / coverage view tabs ── -->
-  <div id="subheader">
     <div class="prog-tabs" id="prog-tabs"></div>
     <div class="risk-tabs" id="risk-tabs"></div>
+    <!-- Coverage mode: view + sub tabs -->
     <div class="coverage-view-tabs" id="coverage-view-tabs"></div>
     <div class="coverage-sub-tabs" id="coverage-sub-tabs"></div>
+    <!-- Always visible: Parks/Conservation toggle (floats right) -->
+    <label class="layer-toggle" id="conservation-control">
+      <input type="checkbox" id="conservation-toggle" checked onchange="toggleConservationLayer(this.checked)">
+      <span class="layer-toggle-label">Parks / Conservation</span>
+    </label>
   </div>
 
   <!-- ── MAP ── -->

@@ -1,8 +1,9 @@
 // ── RUNTIME DATA ──────────────────────────────────────────────────────────
-let ESZ_GEOJSON   = null;  // FeatureCollection — community profile props + geometry
-let STATION_GEO   = null;
-let FACILITY_GEO  = null;
-let STATION_SUMS  = null;
+let ESZ_GEOJSON      = null;  // FeatureCollection — community profile props + geometry
+let STATION_GEO      = null;
+let FACILITY_GEO     = null;
+let CONSERVATION_GEO = null;
+let STATION_SUMS     = null;
 let CATEGORIES    = null;
 let STATIONS      = null;
 let SYNTHETIC     = false;
@@ -39,15 +40,17 @@ const PROG_COLORS = {
 };
 
 // ── APP STATE ─────────────────────────────────────────────────────────────
-let activeMode    = 'community';
+let activeMode     = 'community';
 let activeStation = 'ALL';
-let activeESZ     = null;
+let activeESZ      = null;
 let activeProgram = null;
 let activeRisk    = null;
 let currentMetric = 'est_population';
 let choroplethLayer      = null;
 let stationBoundaryLayer = null;
 let stationLabelLayer    = null;
+let conservationLayer    = null;
+let showConservation     = true;
 
 // ── COVERAGE STATE ────────────────────────────────────────────────────────
 let DRIVE_TIME_GEO     = null;  // FeatureCollection — polygon isochrones
@@ -135,18 +138,20 @@ async function init() {
     }
 
     msg.textContent = 'Fetching boundary layers…';
-    const [stRes, facRes, dtRes, dtRoadsRes, eszCovRes] = await Promise.allSettled([
+    const [stRes, facRes, dtRes, dtRoadsRes, eszCovRes, consRes] = await Promise.allSettled([
       fetch('data/npfr_station_boundary.geojson'),
       fetch('data/CountyFacility.geojson'),
       fetch('data/drive_time_isochrones.geojson'),
       fetch('data/drive_time_roads.geojson'),
       fetch('data/esz_drive_coverage.geojson'),
+      fetch('data/conservation_lands.geojson'),
     ]);
     STATION_GEO      = stRes.status      === 'fulfilled' && stRes.value.ok      ? await stRes.value.json()      : null;
     FACILITY_GEO     = facRes.status     === 'fulfilled' && facRes.value.ok     ? await facRes.value.json()     : null;
     DRIVE_TIME_GEO   = dtRes.status      === 'fulfilled' && dtRes.value.ok      ? await dtRes.value.json()      : null;
     DRIVE_TIME_ROADS = dtRoadsRes.status === 'fulfilled' && dtRoadsRes.value.ok ? await dtRoadsRes.value.json() : null;
     ESZ_DRIVE_COV    = eszCovRes.status  === 'fulfilled' && eszCovRes.value.ok  ? await eszCovRes.value.json()  : null;
+    CONSERVATION_GEO = consRes.status    === 'fulfilled' && consRes.value.ok    ? await consRes.value.json()    : null;
 
   } catch (err) {
     document.getElementById('load-overlay').innerHTML =
@@ -167,6 +172,7 @@ async function init() {
   buildStationPills();
   buildProgTabs();
   renderStationLayers();
+  renderConservationLayer();
   renderChoropleth();
   showStationOverview('ALL');
   setTimeout(() => {
@@ -200,14 +206,95 @@ function buildProgRiskMap() {
   if (fy) document.getElementById('fy-badge').textContent = fy;
 }
 
-// ── STATION PILLS ─────────────────────────────────────────────────────────
+// ── STATION DROPDOWN ──────────────────────────────────────────────────────
+// ── STATION DROPDOWN (single-select) ─────────────────────────────────────
 function buildStationPills() {
-  document.getElementById('station-pills').innerHTML =
-    '<button class="pill all active" data-station="ALL" onclick="filterStation(this)">All</button>'
-    + STATIONS.map(s =>
-        `<button class="pill" data-station="${s}" onclick="filterStation(this)">${s}</button>`
-      ).join('');
+  const wrap = document.getElementById('station-pills');
+  wrap.innerHTML = `
+    <div class="st-dropdown" id="st-dropdown">
+      <button class="st-dropdown-btn" id="st-dropdown-btn" onclick="toggleStationDropdown(event)">
+        <span class="st-dot" id="st-dropdown-dot" style="background:var(--accent)"></span>
+        <span id="st-dropdown-label">All Stations</span>
+        <span class="st-dropdown-arrow">▾</span>
+      </button>
+      <div class="st-dropdown-panel" id="st-dropdown-panel">
+        <div class="st-dropdown-item st-dropdown-item-active" data-station="ALL" onclick="selectStation('ALL')">
+          <span class="st-dot" style="background:var(--accent)"></span>
+          <span>All Stations</span>
+          <span class="st-check-mark" id="st-mark-ALL">✓</span>
+        </div>
+        <div class="st-dropdown-sep"></div>
+        ${STATIONS.map(s => `
+          <div class="st-dropdown-item" data-station="${s}" onclick="selectStation('${s}')">
+            <span class="st-dot" style="background:${STATION_COLORS[s]||'var(--accent)'}"></span>
+            <span>${s}</span>
+            <span class="st-check-mark" id="st-mark-${s}"></span>
+          </div>
+        `).join('')}
+      </div>
+    </div>`;
+
+  document.addEventListener('click', e => {
+    if (!document.getElementById('st-dropdown')?.contains(e.target))
+      document.getElementById('st-dropdown-panel')?.classList.remove('open');
+  });
 }
+
+function toggleStationDropdown(e) {
+  e.stopPropagation();
+  document.getElementById('st-dropdown-panel').classList.toggle('open');
+}
+
+function selectStation(sid) {
+  activeStation = sid;
+  activeESZ     = null;
+
+  // Update button label + dot
+  const color = sid === 'ALL' ? 'var(--accent)' : (STATION_COLORS[sid] || 'var(--accent)');
+  document.getElementById('st-dropdown-label').textContent = sid === 'ALL' ? 'All Stations' : sid;
+  document.getElementById('st-dropdown-dot').style.background = color;
+
+  // Update check marks
+  document.querySelectorAll('.st-check-mark').forEach(el => el.textContent = '');
+  const mark = document.getElementById(`st-mark-${sid}`);
+  if (mark) mark.textContent = '✓';
+
+  // Update active row highlight
+  document.querySelectorAll('.st-dropdown-item').forEach(el =>
+    el.classList.toggle('st-dropdown-item-active', el.dataset.station === sid)
+  );
+
+  document.getElementById('st-dropdown-panel').classList.remove('open');
+
+  if (activeMode === 'coverage') {
+    activeCovMPH = null;
+    buildCoverageSubTabs();
+    renderCoverageLayer();
+    showCoverageOverview();
+  } else {
+    renderChoropleth();
+    showStationOverview(sid);
+  }
+
+  // Fit bounds
+  if (sid !== 'ALL') {
+    const src = activeMode === 'coverage' ? DRIVE_TIME_GEO : ESZ_GEOJSON;
+    const key = activeMode === 'coverage' ? 'station_id' : null;
+    const feats = src?.features?.filter(f =>
+      (key ? f.properties[key] : (f.properties.StationID || f.properties.station_id)) === sid
+    ) || [];
+    if (feats.length) {
+      const b = L.geoJSON({type:'FeatureCollection', features:feats}).getBounds();
+      if (b.isValid()) map.fitBounds(b, {padding:[30,30]});
+    }
+  } else {
+    const b = L.geoJSON(ESZ_GEOJSON).getBounds();
+    if (b.isValid()) map.fitBounds(b, {padding:[30,30]});
+  }
+}
+
+// Called from sidebar station cards
+function filterStation(sid) { selectStation(sid); }
 
 // ── PROGRAM & RISK TABS ───────────────────────────────────────────────────
 function buildProgTabs() {
@@ -339,7 +426,38 @@ function renderStationLayers() {
   }
 }
 
-// ── COMMUNITY CHOROPLETH helpers ──────────────────────────────────────────
+// ── CONSERVATION LAYER ────────────────────────────────────────────────────
+function renderConservationLayer() {
+  if (conservationLayer) { map.removeLayer(conservationLayer); conservationLayer = null; }
+  if (!CONSERVATION_GEO?.features?.length) return;
+
+  conservationLayer = L.geoJSON(CONSERVATION_GEO, {
+    style: () => ({
+      fillColor:   '#2d6a4f',
+      fillOpacity: 0.18,
+      color:       '#52b788',
+      weight:      0.8,
+      opacity:     0.45,
+    }),
+    interactive: false,
+  });
+
+  if (showConservation) conservationLayer.addTo(map);
+}
+
+function toggleConservationLayer(checked) {
+  showConservation = checked;
+  if (!conservationLayer) return;
+  if (showConservation) {
+    conservationLayer.addTo(map);
+    // Restore layer order: conservation sits above choropleth, below station boundaries
+    if (stationBoundaryLayer) stationBoundaryLayer.bringToFront();
+  } else {
+    map.removeLayer(conservationLayer);
+  }
+}
+
+
 const RAMPS = {
   yellow: ['#1a1400','#3d3000','#736000','#a88c00','#ddb800','#ffdd00'],
   fire:   ['#1a1400','#3d3000','#736000','#a88c00','#ddb800','#ffdd00'],
@@ -548,6 +666,8 @@ function renderChoropleth() {
   if (activeMode === 'coverage') return;
   if (choroplethLayer) map.removeLayer(choroplethLayer);
   activeMode === 'community' ? renderCommunityChoropleth() : renderIncidentChoropleth();
+  // Layer order: choropleth → conservation → station boundaries → labels
+  if (conservationLayer && showConservation) conservationLayer.bringToFront();
   if (stationBoundaryLayer) stationBoundaryLayer.bringToFront();
 }
 
@@ -570,7 +690,7 @@ function renderCommunityChoropleth() {
                :          quantileBreaks(vals, 5);
 
   const fc = activeStation === 'ALL' ? ESZ_GEOJSON
-    : {...ESZ_GEOJSON, features: ESZ_GEOJSON.features.filter(f=>f.properties.StationID===activeStation)};
+    : {...ESZ_GEOJSON, features: ESZ_GEOJSON.features.filter(f => (f.properties.StationID || f.properties.station_id) === activeStation)};
 
   choroplethLayer = L.geoJSON(fc, {
     style: feat => {
@@ -618,7 +738,7 @@ function renderIncidentChoropleth() {
   const cuts       = computeEqualWidthCuts(counts, N_BANDS);
   const bandColors = buildBandColors(activeRisk, N_BANDS);
   const fc = activeStation === 'ALL' ? ESZ_GEOJSON
-    : {...ESZ_GEOJSON, features: ESZ_GEOJSON.features.filter(f=>f.properties.StationID===activeStation)};
+    : {...ESZ_GEOJSON, features: ESZ_GEOJSON.features.filter(f => (f.properties.StationID || f.properties.station_id) === activeStation)};
 
   choroplethLayer = L.geoJSON(fc, {
     style: feat => {
@@ -682,7 +802,7 @@ function showStationOverview(sid) {
     </table>
     <div class="sec-hdr">By Station</div>
     ${stations.map(st=>`
-      <div class="station-card" onclick="filterStation(document.querySelector('[data-station=${st.StationID}]'))">
+      <div class="station-card" onclick="filterStation('${st.StationID}')">
         <div class="sc-head">${st.StationID}</div>
         <div class="sc-kv">
           <div class="sc-kv-item"><div class="sc-kv-lbl">ESZs</div><div class="sc-kv-val">${st.esz_count}</div></div>
@@ -926,48 +1046,6 @@ function selectESZIncident(props, count) {
   `;
 }
 
-// ── STATION FILTER ────────────────────────────────────────────────────────
-function filterStation(el) {
-  if (!el || !el.dataset) return;
-  const sid = el.dataset.station;
-  activeStation = sid;
-  activeESZ     = null;
-  document.querySelectorAll('.pill').forEach(p=>p.classList.remove('active'));
-  el.classList.add('active');
-
-  if (activeMode === 'coverage') {
-    activeCovMPH = null; // Reset so All/specific logic re-evaluates for new station context
-    buildCoverageSubTabs();
-    renderCoverageLayer();
-    showCoverageOverview();
-    if (sid !== 'ALL' && DRIVE_TIME_GEO) {
-      const feats = DRIVE_TIME_GEO.features.filter(f => f.properties.station_id === sid);
-      if (feats.length) {
-        const b = L.geoJSON({type:'FeatureCollection',features:feats}).getBounds();
-        if (b.isValid()) map.fitBounds(b, {padding:[30,30]});
-      }
-    } else if (ESZ_GEOJSON) {
-      const b = L.geoJSON(ESZ_GEOJSON).getBounds();
-      if (b.isValid()) map.fitBounds(b, {padding:[30,30]});
-    }
-    return;
-  }
-
-  renderChoropleth();
-  showStationOverview(sid);
-  if (sid !== 'ALL') {
-    const feats = ESZ_GEOJSON.features.filter(f=>
-      (f.properties.StationID||f.properties.station_id) === sid
-    );
-    if (feats.length) {
-      const b = L.geoJSON({type:'FeatureCollection', features:feats}).getBounds();
-      if (b.isValid()) map.fitBounds(b, {padding:[30,30]});
-    }
-  } else {
-    const b = L.geoJSON(ESZ_GEOJSON).getBounds();
-    if (b.isValid()) map.fitBounds(b, {padding:[30,30]});
-  }
-}
 
 // ── METRIC CHANGE ─────────────────────────────────────────────────────────
 document.getElementById('metric-select').addEventListener('change', e => {
@@ -1397,11 +1475,12 @@ function buildCoverageLegendPolygons(features) {
       return `<div class="legend-row"><div class="legend-swatch" style="background:${c};opacity:0.8;border-radius:2px"></div><span>${sid}</span></div>`;
     }).join('');
   } else {
-    // Single station — color by MPH
+    // Single/multi station — color by MPH
     const speeds = [...new Set(features.map(f => String(parseFloat(f.properties.speed_mph))))].sort((a,b)=>parseFloat(a)-parseFloat(b));
+    const stLabel = activeStation === 'ALL' ? 'All Stations' : activeStation;
     const c = STATION_COLORS[activeStation] || 'var(--accent)';
     document.getElementById('legend-title').innerHTML =
-      `<span style="color:${c}">${activeStation}</span>&nbsp;·&nbsp;<span style="color:var(--accent)">${dt} min</span>`;
+      `<span style="color:${c}">${stLabel}</span>&nbsp;·&nbsp;<span style="color:var(--accent)">${dt} min</span>`;
     document.getElementById('legend-rows').innerHTML = speeds.map(s => {
       const mc = MPH_COLORS[s] || { fill:'#00cfff' };
       return `<div class="legend-row"><div class="legend-swatch" style="background:${mc.fill};opacity:0.8;border-radius:2px"></div><span>${s} mph</span></div>`;
@@ -1472,18 +1551,8 @@ function showCoverageOverview() {
 }
 
 function showCoveragePolygonOverview() {
-  const sid = activeStation;
-
-  if (sid === 'ALL') {
-    document.getElementById('sidebar-sub').textContent = 'Polygons · Select a station';
-    document.getElementById('sidebar-body').innerHTML = `
-      <div class="cov-placeholder">
-        <div class="cov-placeholder-icon">⬡</div>
-        <div class="cov-placeholder-title">Select a Station</div>
-        <div>Choose a station using the pills above to view its drive time polygon isochrones, layered by speed.</div>
-      </div>`;
-    return;
-  }
+  const isAll = activeStation === 'ALL';
+  const stLabel = isAll ? 'All Stations' : activeStation;
 
   if (!DRIVE_TIME_GEO) {
     document.getElementById('sidebar-sub').textContent = 'Polygons · No data';
@@ -1491,20 +1560,17 @@ function showCoveragePolygonOverview() {
     return;
   }
 
-  const stFeats = DRIVE_TIME_GEO.features.filter(f => f.properties.station_id === sid);
+  const stFeats = DRIVE_TIME_GEO.features.filter(f => f.properties.station_id === activeStation);
   const speeds  = [...new Set(stFeats.map(f => parseFloat(f.properties.speed_mph)))].sort((a,b)=>a-b);
   const times   = [...new Set(stFeats.map(f => parseFloat(f.properties.minutes)))].sort((a,b)=>a-b);
-  const c       = STATION_COLORS[sid] || 'var(--accent)';
+  const c       = STATION_COLORS[activeStation] || 'var(--accent)';
 
-  const label = activeCovSubType === 'mph'
-    ? `${activeCovMPH} mph`
-    : `${activeCovDriveTime} min`;
-  document.getElementById('sidebar-sub').textContent = `Polygons · ${sid} · ${label}`;
+  document.getElementById('sidebar-sub').textContent = `Polygons · ${stLabel} · ${activeCovDriveTime} min`;
 
   document.getElementById('sidebar-body').innerHTML = `
-    <div class="sec-hdr" style="color:${c}">Polygons · ${sid}</div>
+    <div class="sec-hdr" style="color:${c}">Polygons · ${stLabel}</div>
     <table class="kv-table">
-      <tr><td>Station</td><td><span class="kv-val-lg" style="color:${c}">${sid}</span></td></tr>
+      <tr><td>Station</td><td><span class="kv-val-lg" style="color:${c}">${stLabel}</span></td></tr>
       <tr><td>Total Polygons</td><td>${stFeats.length}</td></tr>
       <tr><td>Speeds</td><td>${speeds.map(s=>s+' mph').join(', ')}</td></tr>
       <tr><td>Times</td><td>${times.map(t=>t+' min').join(', ')}</td></tr>
