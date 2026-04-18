@@ -1,0 +1,292 @@
+{
+  "global": {
+    "agency": "North Port Fire Rescue (NPFR)",
+    "accreditation": {
+      "body": "Commission on Fire Accreditation International (CFAI)",
+      "program": "Community Risk Assessment (CRA)",
+      "standard": "CFAI 10th Edition Standards of Cover",
+      "purpose": "This dashboard is a deliverable for NPFR's CFAI accreditation process. Accreditation requires agencies to conduct a systematic Community Risk Assessment — analyzing demographics, land use, hazards, and historical incident data — and to demonstrate that deployment resources are aligned with community risk. The data and visualizations here directly support that analysis."
+    },
+    "geography": {
+      "esz": {
+        "term": "Emergency Service Zone (ESZ)",
+        "definition": "An ESZ is a geographic subdivision used to organize and analyze emergency response data. NPFR's service area is divided into 315 ESZs across six fire stations (ST81–ST86). Each ESZ represents a manageable analysis unit — smaller than a station district but larger than a single block — allowing risk and coverage metrics to be examined at a fine spatial scale without losing statistical reliability.",
+        "source": "ESZ boundaries are sourced from the Sarasota County ArcGIS FeatureServer (EmergencyServiceZones layer), stored as GeoJSON in EPSG:4326 (WGS84)."
+      },
+      "stations": {
+        "term": "Fire Stations ST81–ST86",
+        "definition": "NPFR operates six fire stations within the City of North Port and surrounding service area. Each station is responsible for a cluster of ESZs that form its primary response district. Station boundaries are derived by dissolving the ESZ polygons assigned to each station."
+      }
+    },
+    "data_sources": [
+      "Sarasota County Public Safety Communications Center (ESZ boundaries, fire response zones)",
+      "City of North Port GIS address point dataset (building locations, occupancy categories, construction data)",
+      "FEMA National Flood Insurance Program (NFIP) flood zone boundaries",
+      "City of North Port GIS hydrant dataset",
+      "ArcGIS Network Analyst drive-time isochrones (25/35/45 mph speed tiers)",
+      "NPFR FlowMSP fire pre-planning system (target hazard data)"
+    ],
+    "pipeline": "Raw GeoJSON and CSV data are processed by a Python GIS pipeline (GeoPandas, Shapely, Fiona) that performs spatial joins, deduplication, metric aggregation, and data assembly. Output files are deployed to GitHub Pages and served via HTTP for this interactive dashboard."
+  },
+  "modes": {
+    "community": {
+      "title": "Community Risk Mode",
+      "subtitle": "Who lives here, and what are they at risk from?",
+      "overview": "Community Risk is the foundational layer of NPFR's CFAI accreditation analysis. It answers a core question: What does the population and built environment look like within each ESZ, and where are concentrations of vulnerability? Each ESZ polygon is colored using a choropleth map — the darker or more saturated the color, the higher the value for the selected metric.",
+      "how_it_works": "Address point data from Sarasota County is spatially joined to ESZ boundaries. Each address point is classified into an occupancy category (e.g., Single-Family Residential, Multifamily, Commercial) using county land-use codes. Duplicate records for the same structure are resolved through category-aware deduplication. The resulting per-ESZ metrics are embedded directly into the ESZ GeoJSON as feature properties and rendered as an interactive choropleth.",
+      "choropleth": {
+        "term": "Choropleth Map",
+        "definition": "A map in which areas are shaded in proportion to a statistical variable. In Community Risk mode, each ESZ polygon is filled with a color that represents the magnitude of the selected metric — for example, estimated population or percentage of buildings in a flood zone. Brighter or more saturated colors indicate higher values."
+      },
+      "metrics": [
+        {
+          "key": "est_population",
+          "label": "Estimated Population",
+          "description": "The estimated number of residents within the ESZ. Derived by multiplying unit counts by category-specific household size factors. Provides a baseline measure of life-safety demand."
+        },
+        {
+          "key": "pct_hydrant_1000ft",
+          "label": "Hydrant Coverage (%)",
+          "description": "The percentage of address units located within 1,000 feet of a fire hydrant. This is a key fire suppression resource metric — lower values indicate areas where engine companies may face water supply challenges."
+        },
+        {
+          "key": "pct_flood_ae",
+          "label": "AE Flood Zone (%)",
+          "description": "The percentage of address units that fall within a FEMA Flood Zone AE — a high-risk flood area with a 1% annual chance of inundation (commonly called the '100-year flood zone'). High values indicate elevated risk of flood-related incidents and potential access challenges during storms."
+        },
+        {
+          "key": "sfr_units",
+          "label": "SFR Buildings",
+          "description": "Count of single-family residential structures. SFR is typically the most common occupancy type in suburban and residential ESZs and the most frequent source of residential fire incidents."
+        },
+        {
+          "key": "multifamily_units",
+          "label": "Multifamily Buildings",
+          "description": "Count of multifamily residential structures (apartments, condominiums, townhomes). These occupancies represent higher life-safety complexity due to larger occupant loads and shared egress systems."
+        },
+        {
+          "key": "mobile_units",
+          "label": "Mobile Homes",
+          "description": "Count of mobile or manufactured housing units. These structures are typically constructed to lower fire-resistance standards and may lack modern fire protection features, representing an elevated risk profile per unit."
+        },
+        {
+          "key": "residential_avg_yrbl",
+          "label": "Residential Building Age",
+          "description": "The average age of residential structures within the ESZ. Older buildings may predate current fire codes, lack sprinkler systems, and use legacy construction materials — all factors that can increase fire spread rate and suppression difficulty. The color ramp is inverted: brighter colors indicate older (higher-risk) building stock."
+        },
+        {
+          "key": "sfr_flood_pct",
+          "label": "SFR Flood Zone (%)",
+          "description": "The fraction of single-family residential units located in a FEMA AE flood zone. Useful for identifying residential neighborhoods with compound risk — fire and flood."
+        },
+        {
+          "key": "commercial_units",
+          "label": "Commercial Buildings",
+          "description": "Count of commercial structures. Commercial occupancies can involve larger floor areas, varied occupant loads, and complex suppression challenges compared to residential buildings."
+        },
+        {
+          "key": "vacant_pct",
+          "label": "Vacant Lots (%)",
+          "description": "Percentage of address points classified as vacant lots or parcels. High vacancy rates can indicate underdeveloped or transitional areas — relevant for both risk planning and future growth projections."
+        }
+      ],
+      "accreditation_relevance": "Community Risk data directly feeds the CFAI Standards of Cover analysis. CFAI requires agencies to demonstrate that deployment resources — station locations, apparatus, staffing — are appropriately matched to the risk profile of each service area. ESZs with high population density, older structures, limited hydrant coverage, or flood exposure may warrant closer attention in deployment planning."
+    },
+    "incident": {
+      "title": "Incident Risk Mode",
+      "subtitle": "Where do incidents concentrate, and what does each risk level actually mean?",
+      "overview": "Incident Risk mode maps historical emergency incidents from NPFR's Computer-Aided Dispatch (CAD) system by program (EMS, Fire, Hazmat, Rescue) and composite risk level (1-Low through 4-Maximum). The risk level assigned to each incident type is not arbitrary — it is the output of a structured, data-driven scoring model developed by NPFR's CRA/SOC Working Group as part of the CFAI accreditation process.",
+      "how_it_works": "CAD incident records are geocoded and spatially joined to ESZ boundaries. Each incident type carries a pre-assigned composite risk score determined by the three-axis model described below. Incident counts are aggregated per ESZ per program × risk level combination. The opacity-ramp choropleth renders ESZ polygons from a dark near-invisible fill at zero incidents up to a saturated color peak at the highest observed count — allowing high-demand ESZs to visually stand out.",
+      "scoring_model": {
+        "title": "How Risk Levels Are Determined: The Three-Axis Model",
+        "description": "Every incident type in NPFR's CAD system is assigned a composite risk score on three independent axes. Those scores are combined using a modified Heron's formula — equivalent to the area of the triangle they form on a three-axis radar chart — to produce a single composite risk score that determines the risk level bin.",
+        "axes": [
+          {
+            "name": "Frequency (Probability)",
+            "scores": "2 / 4 / 6 / 8 / 10",
+            "description": "How often does this incident type occur? Derived directly from five years of NPFR CAD data. This axis is data-calculated — no subjective scoring required."
+          },
+          {
+            "name": "Consequence",
+            "scores": "2 / 4 / 6 / 8 / 10",
+            "description": "If this call goes wrong, how severe is the worst-case community harm? Scored by subject matter experts (NPFR personnel) on four dimensions — Life, Injury, Property, and Environmental impact — each rated 1–5. The four scores are summed, divided by 2, and rounded to the nearest even number. EMS calls are grouped by operational consequence type (e.g., all cardiac arrest variants share the same community consequence profile). Fire, Hazmat, and Rescue incidents are scored individually."
+          },
+          {
+            "name": "Impact (Effective Response Force)",
+            "scores": "2 / 4 / 6 / 8 / 10",
+            "description": "How many personnel does it take to perform every critical task simultaneously at the worst-case version of this incident? This is the Effective Response Force (ERF) — scored from the tasks backward, not from current response plans. ERF totals map to five bands: Low (≤5), Moderate (6–11), High (12–17), Maximum (18–27), and Max+ (≥28 personnel)."
+          }
+        ],
+        "formula": "risk = √( (P×C)² + (C×I)² + (I×P)² ) ÷ 2",
+        "formula_note": "where P = Probability (Frequency), C = Consequence, I = Impact. Composite scores range from approximately 5 (all axes low) to 122 (all axes maximum).",
+        "example": "A Cardiac Arrest call with P=8 (high frequency), C=2 (single patient — low community consequence), and I=4 (moderate ERF) produces a composite score of 25.9, placing it in the Moderate risk bin."
+      },
+      "risk_levels": [
+        {
+          "level": "1-Low",
+          "color": "#2e9e52",
+          "score_range": "~5–18",
+          "description": "Incident types that score low across multiple axes — typically low-frequency events, limited worst-case community harm, and a small Effective Response Force. These incidents do not drive deployment decisions in isolation but are tracked for volume and distribution."
+        },
+        {
+          "level": "2-Moderate",
+          "color": "#c97a1a",
+          "score_range": "~18–40",
+          "description": "Incident types with meaningful scores on at least two axes — for example, a high-frequency call with moderate consequence, or a low-frequency call requiring significant personnel. The bulk of operational call volume typically falls in this band."
+        },
+        {
+          "level": "3-High",
+          "color": "#c0392b",
+          "score_range": "~40–70",
+          "description": "Incident types with elevated scores across multiple axes — higher frequency, serious worst-case community harm, and/or a substantial ERF requirement. These incidents significantly influence response time objectives and resource deployment planning."
+        },
+        {
+          "level": "4-Maximum",
+          "color": "#7b3fa0",
+          "score_range": "~70–122",
+          "description": "Incident types that score high on all three axes simultaneously — frequent, severe in worst-case consequence, and requiring a large Effective Response Force. These are the incidents that drive station placement, staffing levels, and mutual aid agreements."
+        }
+      ],
+      "opacity_ramp": {
+        "term": "Opacity-Ramp Choropleth",
+        "definition": "Rather than using color breaks or quantile bins, this map uses a continuous opacity scale: ESZs with zero incidents for the selected program/risk are rendered in a very dark near-invisible fill, and as incident counts increase, the fill becomes progressively more opaque and saturated, reaching a bright color peak at the highest observed count. This allows high-demand ESZs to stand out while zones with no incidents in that category quietly recede."
+      },
+      "programs": [
+        {
+          "key": "EMS",
+          "color": "#3a74b8",
+          "description": "Emergency Medical Services — the highest-volume program for most fire-based EMS agencies. EMS incident types are grouped by operational consequence type (e.g., all cardiac arrest determinant codes share a single consequence score) rather than scored individually across hundreds of CAD codes."
+        },
+        {
+          "key": "Fire",
+          "color": "#c0392b",
+          "description": "Fire suppression incidents — structure fires, vehicle fires, wildland/brush fires, and alarm responses. Each fire incident type is scored individually because consequence and ERF vary significantly across call types."
+        },
+        {
+          "key": "Hazmat",
+          "color": "#c97a1a",
+          "description": "Hazardous Materials incidents — chemical spills, gas leaks, fuel releases, and other events involving potentially dangerous substances. Scored individually due to wide variability in consequence and ERF by hazard type."
+        },
+        {
+          "key": "Rescue",
+          "color": "#7b3fa0",
+          "description": "Technical Rescue incidents — vehicle extrications, water rescue, confined space, and other specialized operations. Each rescue type carries its own consequence and ERF profile and is scored independently."
+        }
+      ],
+      "accreditation_relevance": "CFAI requires that risk level designations be grounded in data and validated by subject matter experts — not assigned arbitrarily. NPFR's three-axis model satisfies this requirement: Frequency comes from five years of CAD data, Consequence is scored by working firefighters and officers, and Impact is derived from critical task analysis rather than current response plans. The resulting risk levels are the foundation for NPFR's response time objectives, coverage gap analysis, and Standards of Cover documentation."
+    },
+    "coverage": {
+      "title": "Coverage Mode",
+      "subtitle": "How quickly can NPFR units reach any point in the service area?",
+      "overview": "Coverage mode visualizes NPFR's drive-time reach from each of the six fire stations. It directly addresses one of the most critical questions in fire service deployment: Given current station locations, which areas can be reached within NFPA benchmark time thresholds? Three views are available: Road View (segment-level coverage), Polygon View (isochrone areas), and ESZ View (per-ESZ coverage fractions).",
+      "how_it_works": "Drive-time isochrones were generated using ArcGIS Network Analyst's Service Area solver, which routes from each station outward along the road network at three speed tiers (25, 35, and 45 mph) and three time thresholds. The resulting polygons represent the area reachable within each time/speed combination. Road segments are evaluated against the isochrone polygons using a client-side ray-cast point-in-polygon algorithm to determine how many stations can reach each road within the selected time threshold.",
+      "views": [
+        {
+          "key": "road",
+          "label": "Road View",
+          "description": "Individual road segments are colored by the number of NPFR stations that can reach them within the selected drive time. Green segments are covered by one station; segments with more coverage overlap appear in progressively different colors. Roads outside all isochrones remain uncolored (dark), indicating a coverage gap."
+        },
+        {
+          "key": "polygons",
+          "label": "Polygon View",
+          "description": "Isochrone polygons for each station are displayed directly, colored either by station identity or by speed tier. Each polygon represents the full road-network reachable area from that station within the selected time at the selected speed. Polygons are rendered largest-first to avoid smaller polygons being hidden underneath."
+        },
+        {
+          "key": "esz",
+          "label": "ESZ View",
+          "description": "Each ESZ is colored by the fraction of its area covered by at least one station's isochrone. An ESZ with 100% coverage can be fully reached within the selected time; an ESZ at 50% has only half its area covered. A steel-blue opacity ramp is used: darker ESZs have lower coverage fractions."
+        }
+      ],
+      "terms": [
+        {
+          "term": "Isochrone",
+          "definition": "A polygon representing the area reachable from a point within a given travel time, routing along the actual road network. Isochrones account for road connectivity and speed limits — they are not simple distance buffers."
+        },
+        {
+          "term": "Speed Tier (25 / 35 / 45 mph)",
+          "definition": "The average travel speed assumption used in the network routing model. 25 mph approximates congested urban driving; 35 mph is a moderate suburban speed; 45 mph reflects rural or open-road travel. Real response times vary by time of day, traffic, and road conditions."
+        },
+        {
+          "term": "Drive Time Threshold",
+          "definition": "The maximum travel time (in minutes) used to define the isochrone. NFPA 1710 establishes benchmark drive-time targets for career departments; NPFR's coverage analysis uses multiple thresholds to show how reach changes as time increases."
+        },
+        {
+          "term": "Coverage Gap",
+          "definition": "An area — road segment or ESZ — that cannot be reached within the selected time/speed combination from any NPFR station. Identifying coverage gaps is a core output of the CFAI Standards of Cover analysis."
+        }
+      ],
+      "nfpa_context": "NFPA 1710 (Standard for the Organization and Deployment of Fire Suppression Operations, Emergency Medical Operations, and Special Operations to the Public by Career Fire Departments) establishes benchmark travel time targets. CFAI accreditation uses these benchmarks as reference points when evaluating whether an agency's deployment model meets community expectations.",
+      "accreditation_relevance": "Coverage analysis is one of the most heavily weighted components of CFAI's Standards of Cover evaluation. Agencies must demonstrate that they have systematically analyzed travel time coverage across their service area, identified gaps, and developed strategies to address them. The three coverage views in this dashboard provide the spatial evidence base for that analysis."
+    },
+    "hazards": {
+      "title": "Target Hazards Mode",
+      "subtitle": "Where are the most operationally complex sites in the service area?",
+      "overview": "Target Hazards mode displays pre-planned high-hazard occupancies sourced from NPFR's FlowMSP fire pre-planning system. These are sites that — due to their occupancy type, construction, occupant load, or required fire flow — have been identified as operationally significant. Pre-plans give responding companies critical information before they arrive on scene.",
+      "how_it_works": "Hazard data is exported from FlowMSP as a GeoJSON FeatureCollection with one feature per building. Buildings belonging to the same campus (school complex, hospital campus, shopping center) share a parent_id field and are grouped into a single campus marker before rendering. Campus markers are proportional circles sized by the total Required Fire Flow across all buildings. Category is assigned by the highest-priority occupancy type present on campus.",
+      "flowmsp": {
+        "term": "FlowMSP",
+        "definition": "FlowMSP is a cloud-based fire pre-planning platform used by NPFR. It stores site-specific data for high-hazard occupancies including floor plans, construction details, utility shutoffs, hazardous materials, access points, and annotated diagrams. Pre-plans are accessed by crews via mobile devices while en route to an incident."
+      },
+      "campus_grouping": {
+        "term": "Campus Grouping",
+        "definition": "Multiple buildings on the same property (e.g., a school with a gymnasium and portable classrooms, or a hospital complex with multiple wings) share a parent_id in the FlowMSP export. The dashboard groups these into a single campus marker to avoid stacked points and to display aggregate metrics — total GPM, combined annotation count, overall sprinkler status."
+      },
+      "gpm": {
+        "term": "Required Fire Flow (GPM)",
+        "definition": "The estimated water flow rate, in gallons per minute, that fire suppression operations would require at this occupancy. Calculated per NFPA 1142 or ISO fire flow formulas based on construction type, floor area, and occupancy. Higher GPM sites require more water supply resources — hydrants, tender operations, or relay pumping. The circle size of each campus marker on the map is proportional to total required fire flow."
+      },
+      "flow_tiers": [
+        { "label": "≤ 4,000 GPM", "description": "Light hazard or small commercial occupancies." },
+        { "label": "4,001–10,000 GPM", "description": "Moderate hazard — larger commercial, light industrial, multifamily." },
+        { "label": "10,001–20,000 GPM", "description": "High hazard — large assembly, institutional, industrial occupancies." },
+        { "label": "> 20,000 GPM", "description": "Maximum hazard — heavy industrial, large-campus or multi-building complexes." }
+      ],
+      "categories": [
+        {
+          "key": "school",
+          "label": "School / EDU",
+          "description": "Educational occupancies including K-12 schools, day care facilities, and campuses. These sites have large daytime populations of minors, complex egress requirements, and may include gymnasiums and multi-building configurations."
+        },
+        {
+          "key": "alf",
+          "label": "ALF / Medical",
+          "description": "Assisted Living Facilities, nursing homes, memory care units, and medical care institutions. These occupancies have non-ambulatory or limited-mobility residents who cannot self-evacuate, making them among the highest life-safety priority sites."
+        },
+        {
+          "key": "assembly",
+          "label": "Assembly",
+          "description": "Places of assembly including churches, event venues, stadiums, and similar occupancies with variable but potentially large occupant loads. Note: Church pre-plans are not yet fully complete in FlowMSP — Assembly markers may not reflect all churches in the service area."
+        },
+        {
+          "key": "multifamily",
+          "label": "Multi-Family",
+          "description": "Apartment complexes, condominiums, and other multi-unit residential buildings. Large multifamily structures may have hundreds of occupants and require ladder operations, standpipe connections, or high-rise protocols."
+        },
+        {
+          "key": "commercial",
+          "label": "Commercial",
+          "description": "Business and mercantile occupancies including office buildings, retail centers, and restaurants. Complexity varies widely by size and occupant load."
+        },
+        {
+          "key": "industrial",
+          "label": "Industrial",
+          "description": "Industrial, storage, and high-hazard occupancies. May involve flammable materials, hazardous processes, or high fire loads requiring specialized suppression tactics."
+        },
+        {
+          "key": "special",
+          "label": "Special",
+          "description": "Special structures not easily classified elsewhere — may include utility facilities, government infrastructure, or unique architectural features requiring custom pre-plan approaches."
+        }
+      ],
+      "construction_types": {
+        "term": "Construction Type",
+        "definition": "Buildings are classified by construction type per NFPA 220 (Type I–V) or equivalent. Construction type affects fire spread rate, structural integrity under fire conditions, and tactical decisions. Type I (fire-resistive) and Type II (non-combustible) offer the greatest fire resistance; Type V (wood-frame) has the highest risk of rapid spread and structural collapse."
+      },
+      "sprinkler_status": {
+        "term": "Sprinkler Status",
+        "definition": "Indicates whether an occupancy has an automatic fire sprinkler system. 'Full' means the entire building is protected; 'Partial' means only some areas are sprinklered; 'None' means no sprinkler system is present. Sprinklered occupancies have significantly lower fire mortality and property loss rates."
+      },
+      "accreditation_relevance": "CFAI standards require agencies to identify and pre-plan target hazards within their service area. Pre-plans demonstrate that crews are prepared for the most complex potential incidents. The Target Hazards map provides a spatial inventory of pre-planned sites, supports gap analysis (identifying high-hazard occupancies that lack pre-plans), and informs training and resource allocation decisions."
+    }
+  }
+}

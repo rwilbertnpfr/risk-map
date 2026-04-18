@@ -25,10 +25,10 @@
     <div class="hdr-sep"></div>
 
     <div class="mode-pills">
-      <button class="mode-pill active" id="mode-community" onclick="setMode('community')">Community</button>
-      <button class="mode-pill"        id="mode-incident"  onclick="setMode('incident')">Incident Risk</button>
-      <button class="mode-pill"        id="mode-coverage"  onclick="setMode('coverage')">Coverage</button>
-      <button class="mode-pill"        id="mode-hazards"   onclick="setMode('hazards')">Target Hazards</button>
+      <button class="mode-pill active" id="mode-community" onclick="setModeWithInfo('community')">Community</button>
+      <button class="mode-pill"        id="mode-incident"  onclick="setModeWithInfo('incident')">Incident Risk</button>
+      <button class="mode-pill"        id="mode-coverage"  onclick="setModeWithInfo('coverage')">Coverage</button>
+      <button class="mode-pill"        id="mode-hazards"   onclick="setModeWithInfo('hazards')">Target Hazards</button>
     </div>
 
     <div class="hdr-sep"></div>
@@ -37,6 +37,19 @@
     <button id="export-btn" onclick="exportPDF()">⬇ Export PDF</button>
     <div id="synthetic-badge">Synthetic Data</div>
   </header>
+
+  <!-- ── INFO MODAL ── -->
+  <div id="info-overlay" onclick="closeInfoPanel(event)">
+    <div id="info-panel">
+      <div id="info-panel-header">
+        <div id="info-panel-title">About This Map</div>
+        <button id="info-close-btn" onclick="closeInfoPanel()" title="Close">✕</button>
+      </div>
+      <div id="info-panel-body">
+        <div id="info-loading">Loading…</div>
+      </div>
+    </div>
+  </div>
 
   <!-- ── SUB HEADER — metric select / program + risk tabs / coverage tabs / parks toggle ── -->
   <div id="subheader">
@@ -100,6 +113,7 @@
   <!-- ── MAP ── -->
   <div id="map-wrap">
     <div id="map"></div>
+    <button id="info-btn" onclick="openInfoPanel()" title="About this map">ⓘ About</button>
     <div id="station-badge" style="display:none"></div>
     <div id="legend">
       <div class="legend-title" id="legend-title">Est. Population</div>

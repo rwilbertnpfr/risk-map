@@ -2359,5 +2359,294 @@ function showCampusDetail(campus) {
   map.setView([campus.lat, campus.lng], Math.max(map.getZoom(), 15), { animate: true });
 }
 
+// ── INFO PANEL ────────────────────────────────────────────────────────────
+let INFO_DATA = null;
+
+async function loadInfoData() {
+  if (INFO_DATA) return INFO_DATA;
+  try {
+    const resp = await fetch('data/map_info.json');
+    if (!resp.ok) throw new Error('map_info.json not found');
+    INFO_DATA = await resp.json();
+  } catch (e) {
+    console.warn('[NPFR] map_info.json load failed:', e);
+    INFO_DATA = {};
+  }
+  return INFO_DATA;
+}
+
+async function openInfoPanel() {
+  const overlay = document.getElementById('info-overlay');
+  overlay.classList.add('open');
+  document.body.style.overflow = 'hidden';
+
+  const body = document.getElementById('info-panel-body');
+  body.innerHTML = '<div id="info-loading">Loading…</div>';
+
+  const data = await loadInfoData();
+  renderInfoPanel(data, activeMode);
+}
+
+function closeInfoPanel(e) {
+  if (e && e.target !== document.getElementById('info-overlay') && e.target !== document.getElementById('info-close-btn')) return;
+  document.getElementById('info-overlay').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    document.getElementById('info-overlay').classList.remove('open');
+    document.body.style.overflow = '';
+  }
+});
+
+function renderInfoPanel(data, mode) {
+  const body = document.getElementById('info-panel-body');
+  const title = document.getElementById('info-panel-title');
+
+  const modeData = data?.modes?.[mode] || {};
+  const global   = data?.global  || {};
+
+  // Update panel title
+  title.textContent = modeData.title || 'About This Map';
+
+  let html = '';
+
+  // ── MODE BADGE + HEADING
+  html += `
+    <div class="info-mode-badge">◉ ${(mode).toUpperCase()} MODE</div>
+    <div class="info-mode-title">${modeData.title || ''}</div>
+    <div class="info-mode-subtitle">${modeData.subtitle || ''}</div>
+  `;
+
+  // ── OVERVIEW
+  if (modeData.overview) {
+    html += `
+      <div class="info-section">
+        <div class="info-section-title">Overview</div>
+        <p class="info-body-text">${modeData.overview}</p>
+      </div>`;
+  }
+
+  // ── HOW IT WORKS
+  if (modeData.how_it_works) {
+    html += `
+      <div class="info-section">
+        <div class="info-section-title">How It's Built</div>
+        <p class="info-body-text">${modeData.how_it_works}</p>
+      </div>`;
+  }
+
+  // ── MODE-SPECIFIC CONTENT
+
+  // COMMUNITY: metrics
+  if (mode === 'community') {
+    if (modeData.choropleth) {
+      html += `<div class="info-section"><div class="info-section-title">Key Term</div>
+        <div class="info-term-grid"><div class="info-term-card">
+          <div class="info-term-name">${modeData.choropleth.term}</div>
+          <div class="info-term-def">${modeData.choropleth.definition}</div>
+        </div></div></div>`;
+    }
+    if (modeData.metrics?.length) {
+      html += `<div class="info-section"><div class="info-section-title">Available Metrics</div>
+        <div class="info-item-list">`;
+      for (const m of modeData.metrics) {
+        html += `<div class="info-item">
+          <div class="info-item-label">${m.label}</div>
+          <div class="info-item-desc">${m.description}</div>
+        </div>`;
+      }
+      html += `</div></div>`;
+    }
+  }
+
+  // INCIDENT: scoring model + risk levels + programs + choropleth type
+  if (mode === 'incident') {
+    const sm = modeData.scoring_model;
+    if (sm) {
+      html += `<div class="info-section">
+        <div class="info-section-title">${sm.title}</div>
+        <p class="info-body-text">${sm.description}</p>
+        <div class="info-scoring-axes">`;
+      for (const ax of (sm.axes || [])) {
+        html += `<div class="info-axis-card">
+          <div class="info-axis-name">${ax.name}</div>
+          <div class="info-axis-scores">${ax.scores}</div>
+          <div class="info-axis-desc">${ax.description}</div>
+        </div>`;
+      }
+      html += `</div>`;
+      if (sm.formula) {
+        html += `<div class="info-formula-box">
+          <div class="info-formula-label">Formula</div>
+          <div class="info-formula">${sm.formula}</div>
+          <div class="info-formula-note">${sm.formula_note}</div>
+          <div class="info-formula-example"><strong>Example:</strong> ${sm.example}</div>
+        </div>`;
+      }
+      html += `</div>`;
+    }
+    if (modeData.risk_levels?.length) {
+      html += `<div class="info-section"><div class="info-section-title">Risk Level Bins</div>
+        <div class="info-item-list">`;
+      for (const r of modeData.risk_levels) {
+        html += `<div class="info-item">
+          <div class="info-item-label"><span class="info-item-dot" style="background:${r.color}"></span>${r.level}${r.score_range ? `<br><span style="font-size:11px;font-weight:400;color:var(--muted)">score ${r.score_range}</span>` : ''}</div>
+          <div class="info-item-desc">${r.description}</div>
+        </div>`;
+      }
+      html += `</div></div>`;
+    }
+    if (modeData.programs?.length) {
+      html += `<div class="info-section"><div class="info-section-title">Response Programs</div>
+        <div class="info-item-list">`;
+      for (const p of modeData.programs) {
+        html += `<div class="info-item">
+          <div class="info-item-label"><span class="info-item-dot" style="background:${p.color}"></span>${p.key}</div>
+          <div class="info-item-desc">${p.description}</div>
+        </div>`;
+      }
+      html += `</div></div>`;
+    }
+    if (modeData.opacity_ramp) {
+      html += `<div class="info-section"><div class="info-section-title">Map Rendering</div>
+        <div class="info-term-grid"><div class="info-term-card">
+          <div class="info-term-name">${modeData.opacity_ramp.term}</div>
+          <div class="info-term-def">${modeData.opacity_ramp.definition}</div>
+        </div></div></div>`;
+    }
+  }
+
+  // COVERAGE: views + terms
+  if (mode === 'coverage') {
+    if (modeData.views?.length) {
+      html += `<div class="info-section"><div class="info-section-title">Map Views</div>
+        <div class="info-item-list">`;
+      for (const v of modeData.views) {
+        html += `<div class="info-item">
+          <div class="info-item-label">${v.label}</div>
+          <div class="info-item-desc">${v.description}</div>
+        </div>`;
+      }
+      html += `</div></div>`;
+    }
+    if (modeData.terms?.length) {
+      html += `<div class="info-section"><div class="info-section-title">Key Terms</div>
+        <div class="info-term-grid">`;
+      for (const t of modeData.terms) {
+        html += `<div class="info-term-card">
+          <div class="info-term-name">${t.term}</div>
+          <div class="info-term-def">${t.definition}</div>
+        </div>`;
+      }
+      html += `</div></div>`;
+    }
+    if (modeData.nfpa_context) {
+      html += `<div class="info-section"><div class="info-section-title">NFPA 1710 Context</div>
+        <p class="info-body-text">${modeData.nfpa_context}</p>
+      </div>`;
+    }
+  }
+
+  // HAZARDS: FlowMSP + categories + GPM + sprinkler
+  if (mode === 'hazards') {
+    const terms = [modeData.flowmsp, modeData.campus_grouping, modeData.gpm, modeData.construction_types, modeData.sprinkler_status].filter(Boolean);
+    if (terms.length) {
+      html += `<div class="info-section"><div class="info-section-title">Key Terms</div>
+        <div class="info-term-grid">`;
+      for (const t of terms) {
+        html += `<div class="info-term-card">
+          <div class="info-term-name">${t.term}</div>
+          <div class="info-term-def">${t.definition}</div>
+        </div>`;
+      }
+      html += `</div></div>`;
+    }
+    if (modeData.flow_tiers?.length) {
+      const tierColors = ['#4a6fa5','#c97a1a','#c0392b','#7b3fa0'];
+      html += `<div class="info-section"><div class="info-section-title">Fire Flow Tiers (Marker Size)</div>
+        <table class="info-gpm-table"><thead><tr><th>Flow Range</th><th>Significance</th></tr></thead><tbody>`;
+      modeData.flow_tiers.forEach((t,i) => {
+        html += `<tr><td><span class="info-gpm-dot" style="background:${tierColors[i]}"></span>${t.label}</td><td>${t.description}</td></tr>`;
+      });
+      html += `</tbody></table></div>`;
+    }
+    if (modeData.categories?.length) {
+      html += `<div class="info-section"><div class="info-section-title">Occupancy Categories</div>
+        <div class="info-item-list">`;
+      const catColors = { school:'#c97a1a', alf:'#c0392b', assembly:'#3a74b8', multifamily:'#d4a017', commercial:'#1B998B', industrial:'#6A4C93', special:'#7a7a7a' };
+      for (const c of modeData.categories) {
+        html += `<div class="info-item">
+          <div class="info-item-label"><span class="info-item-dot" style="background:${catColors[c.key]||'#888'}"></span>${c.label}</div>
+          <div class="info-item-desc">${c.description}</div>
+        </div>`;
+      }
+      html += `</div></div>`;
+    }
+  }
+
+  // ── ACCREDITATION RELEVANCE (all modes)
+  if (modeData.accreditation_relevance) {
+    html += `<div class="info-section">
+      <div class="info-section-title">🏅 CFAI Accreditation Relevance</div>
+      <div class="info-accred-box"><p>${modeData.accreditation_relevance}</p></div>
+    </div>`;
+  }
+
+  // ── DIVIDER + GLOBAL SECTION
+  html += `<hr class="info-divider">`;
+
+  // ESZ definition
+  if (global.geography?.esz) {
+    const esz = global.geography.esz;
+    html += `<div class="info-section"><div class="info-section-title">About Emergency Service Zones</div>
+      <div class="info-term-grid"><div class="info-term-card">
+        <div class="info-term-name">${esz.term}</div>
+        <div class="info-term-def">${esz.definition}</div>
+      </div></div>
+      <p class="info-body-text" style="margin-top:10px;font-size:13px;color:var(--muted)">${esz.source}</p>
+    </div>`;
+  }
+
+  // Accreditation info
+  if (global.accreditation) {
+    const a = global.accreditation;
+    html += `<div class="info-section"><div class="info-section-title">CFAI Accreditation Program</div>
+      <div class="info-term-grid"><div class="info-term-card">
+        <div class="info-term-name">${a.body} — ${a.program}</div>
+        <div class="info-term-def">${a.purpose}</div>
+      </div></div>
+    </div>`;
+  }
+
+  // Data sources
+  if (global.data_sources?.length) {
+    html += `<div class="info-section"><div class="info-section-title">Data Sources</div>
+      <ul class="info-sources">`;
+    for (const s of global.data_sources) {
+      html += `<li>${s}</li>`;
+    }
+    html += `</ul>`;
+    if (global.pipeline) {
+      html += `<p class="info-body-text" style="margin-top:10px;font-size:13px">${global.pipeline}</p>`;
+    }
+    html += `</div>`;
+  }
+
+  body.innerHTML = html;
+}
+
+// Re-render info panel when mode changes (if panel is open)
+const _origSetMode = setMode;
+// Wrap setMode to re-render info panel if open
+function setModeWithInfo(mode) {
+  _origSetMode(mode);
+  const overlay = document.getElementById('info-overlay');
+  if (overlay?.classList.contains('open') && INFO_DATA) {
+    renderInfoPanel(INFO_DATA, mode);
+  }
+}
+
 // ── BOOT ──────────────────────────────────────────────────────────────────
 init();
