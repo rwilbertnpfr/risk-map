@@ -107,14 +107,22 @@ const HAZARD_CAT_CONFIG = {
   special:     { label:'Special',       color:'#7a7a7a', icon:'⚙'  },
 };
 // ── COVERAGE STATE ────────────────────────────────────────────────────────
-let DRIVE_TIME_GEO     = null;  // FeatureCollection — polygon isochrones
-let DRIVE_TIME_ROADS   = null;  // FeatureCollection — road LineString segments
-let ESZ_DRIVE_COV      = null;  // FeatureCollection — esz_drive_coverage.geojson
+let DRIVE_TIME_GEO     = null;  // FeatureCollection — polygon isochrones (active bucket)
+let DRIVE_TIME_ROADS   = null;  // FeatureCollection — road LineString segments (active bucket)
+let ESZ_DRIVE_COV      = null;  // FeatureCollection — esz_drive_coverage (active bucket)
 let isochroneLayer     = null;  // Leaflet layer for coverage rendering
 let activeCovView      = 'road';     // 'road' | 'polygons' | 'esz'
 let activeCovSubType   = 'mph';      // 'mph' | 'drivetime'
 let activeCovMPH       = null;       // e.g. '25', '35', '45'
 let activeCovDriveTime = null;       // e.g. '4'
+
+// Lazy-load state — tracks which minute bucket is currently in memory
+let loadedCovMin       = null;  // e.g. '4' | '6' | '8'
+let covBucketLoading   = null;  // Promise or null — prevents duplicate in-flight fetches
+
+// Known coverage tiers (used by subheader before any bucket is loaded)
+const COV_TIMES  = ['4', '6', '8'];
+const COV_SPEEDS = ['25', '35', '45'];
 
 // Speed MPH color palette — muted, distinct, non-neon
 const MPH_COLORS = {
@@ -219,22 +227,17 @@ async function init() {
     }
 
     msg.textContent = 'Fetching boundary layers…';
-    const [stRes, facRes, dtRes, dtRoadsRes, eszCovRes, consRes, thRes] = await Promise.allSettled([
+    const [stRes, facRes, consRes, thRes] = await Promise.allSettled([
       fetch('data/npfr_station_boundary.geojson'),
       fetch('data/CountyFacility.geojson'),
-      fetch('data/drive_time_isochrones.geojson'),
-      fetch('data/drive_time_roads.geojson'),
-      fetch('data/esz_drive_coverage.geojson'),
       fetch('data/conservation_lands.geojson'),
       fetch('data/flowmsp_high_hazard.geojson'),
     ]);
-    STATION_GEO        = stRes.status      === 'fulfilled' && stRes.value.ok      ? await stRes.value.json()      : null;
-    FACILITY_GEO       = facRes.status     === 'fulfilled' && facRes.value.ok     ? await facRes.value.json()     : null;
-    DRIVE_TIME_GEO     = dtRes.status      === 'fulfilled' && dtRes.value.ok      ? await dtRes.value.json()      : null;
-    DRIVE_TIME_ROADS   = dtRoadsRes.status === 'fulfilled' && dtRoadsRes.value.ok ? await dtRoadsRes.value.json() : null;
-    ESZ_DRIVE_COV      = eszCovRes.status  === 'fulfilled' && eszCovRes.value.ok  ? await eszCovRes.value.json()  : null;
-    CONSERVATION_GEO   = consRes.status    === 'fulfilled' && consRes.value.ok    ? await consRes.value.json()    : null;
-    TARGET_HAZARDS_GEO = thRes.status      === 'fulfilled' && thRes.value.ok      ? await thRes.value.json()      : null;
+    STATION_GEO        = stRes.status  === 'fulfilled' && stRes.value.ok  ? await stRes.value.json()  : null;
+    FACILITY_GEO       = facRes.status === 'fulfilled' && facRes.value.ok ? await facRes.value.json() : null;
+    CONSERVATION_GEO   = consRes.status === 'fulfilled' && consRes.value.ok ? await consRes.value.json() : null;
+    TARGET_HAZARDS_GEO = thRes.status  === 'fulfilled' && thRes.value.ok  ? await thRes.value.json()  : null;
+    // Coverage GeoJSON is lazy-loaded per minute bucket when Coverage mode is first activated
 
   } catch (err) {
     document.getElementById('load-overlay').innerHTML =
@@ -356,8 +359,10 @@ function selectStation(sid) {
   if (activeMode === 'coverage') {
     activeCovMPH = null;
     buildCoverageSubTabs();
-    renderCoverageLayer();
-    showCoverageOverview();
+    loadCovBucket(activeCovDriveTime).then(() => {
+      renderCoverageLayer();
+      showCoverageOverview();
+    });
   } else {
     renderChoropleth();
     showStationOverview(sid);
@@ -438,8 +443,11 @@ function setMode(mode) {
     clearHazardsLayer();
     if (choroplethLayer) { map.removeLayer(choroplethLayer); choroplethLayer = null; }
     buildCoverageSubheader();
-    renderCoverageLayer();
-    showCoverageOverview();
+    // activeCovDriveTime is set by buildCoverageSubTabs (called inside buildCoverageSubheader)
+    loadCovBucket(activeCovDriveTime).then(() => {
+      renderCoverageLayer();
+      showCoverageOverview();
+    });
   } else if (mode === 'hazards') {
     activeProgram = null;
     activeRisk    = null;
@@ -449,12 +457,6 @@ function setMode(mode) {
     buildHazardsCatTabs();
     renderHazardsLayer();
     showHazardsOverview();
-  }
-
-  // If info panel is open, re-render it for the new mode
-  const infoOverlay = document.getElementById('info-overlay');
-  if (infoOverlay?.classList.contains('open') && INFO_DATA) {
-    renderInfoPanel(INFO_DATA, mode);
   }
 }
 
@@ -584,8 +586,34 @@ function renderStationLayers() {
     stationLabelLayer = grp.addTo(map);
   }
 
-  // ── ESZ ID labels — disabled (too cluttered at station scale)
-  // eslLabelLayer remains null
+  // ── ESZ ID labels — only in single-station view ───────────────────────
+  if (isSingle && ESZ_GEOJSON?.features) {
+    const eszFeats = ESZ_GEOJSON.features.filter(f =>
+      (f.properties.StationID || f.properties.station_id) === activeStation
+    );
+    if (eszFeats.length) {
+      const egrp = L.layerGroup();
+      eszFeats.forEach(f => {
+        const id = f.properties.ESZ_ID;
+        if (!id) return;
+        const ring = f.geometry.type === 'Polygon'
+          ? f.geometry.coordinates[0]
+          : f.geometry.coordinates[0]?.[0];
+        if (!ring?.length) return;
+        const cx = ring.reduce((a,c)=>a+c[0],0) / ring.length;
+        const cy = ring.reduce((a,c)=>a+c[1],0) / ring.length;
+        L.marker([cy, cx], {
+          icon: L.divIcon({
+            className: 'esz-map-label',
+            html: id,
+            iconAnchor: [0, 6],
+          }),
+          interactive: false, zIndexOffset: 400,
+        }).addTo(egrp);
+      });
+      eszLabelLayer = egrp.addTo(map);
+    }
+  }
 }
 
 // ── CONSERVATION LAYER ────────────────────────────────────────────────────
@@ -1299,6 +1327,39 @@ function clearIsochroneLayer() {
   if (isochroneLayer) { map.removeLayer(isochroneLayer); isochroneLayer = null; }
 }
 
+// Lazy-load the three GeoJSON files for a given minute bucket.
+// Returns true if data is ready, false on load failure.
+async function loadCovBucket(min) {
+  if (loadedCovMin === min) return true;   // already in memory
+  if (covBucketLoading) await covBucketLoading; // wait for in-flight fetch
+  if (loadedCovMin === min) return true;   // resolved by another caller
+
+  covBucketLoading = (async () => {
+    try {
+      const [isoRes, roadsRes, covRes] = await Promise.all([
+        fetch(`data/drive_time_isochrones_${min}min.geojson`),
+        fetch(`data/drive_time_roads_${min}min.geojson`),
+        fetch(`data/esz_drive_coverage_${min}min.geojson`),
+      ]);
+      if (!isoRes.ok || !roadsRes.ok || !covRes.ok)
+        throw new Error(`HTTP error loading ${min}min bucket`);
+      [DRIVE_TIME_GEO, DRIVE_TIME_ROADS, ESZ_DRIVE_COV] = await Promise.all([
+        isoRes.json(), roadsRes.json(), covRes.json(),
+      ]);
+      loadedCovMin = min;
+    } catch (err) {
+      console.warn('[NPFR] Coverage bucket load failed:', err);
+      DRIVE_TIME_GEO = DRIVE_TIME_ROADS = ESZ_DRIVE_COV = null;
+      loadedCovMin = null;
+    } finally {
+      covBucketLoading = null;
+    }
+  })();
+
+  await covBucketLoading;
+  return loadedCovMin === min;
+}
+
 // Build the subheader for coverage: Road View | Polygons | ESZ View + sub-tabs
 function buildCoverageSubheader() {
   document.getElementById('coverage-view-tabs').innerHTML =
@@ -1310,44 +1371,15 @@ function buildCoverageSubheader() {
 }
 
 function buildCoverageSubTabs() {
-  if (activeCovView === 'esz') {
-    // Discover available time+mph combos from ESZ coverage column names
-    // Columns: cov_{mph}mph_{min}min
-    const sample = ESZ_DRIVE_COV?.features?.[0]?.properties || {};
-    const covKeys = Object.keys(sample).filter(k => k.startsWith('cov_'));
-    const times  = [...new Set(covKeys.map(k => { const m=k.match(/_(\d+)min$/); return m?m[1]:null; }).filter(Boolean))].sort((a,b)=>+a-+b);
-    const speeds = [...new Set(covKeys.map(k => { const m=k.match(/cov_(\d+)mph/);  return m?m[1]:null; }).filter(Boolean))].sort((a,b)=>+a-+b);
+  // Use hardcoded tier constants — we can't discover from feature data before the
+  // first bucket loads, and they're stable across all buckets.
+  const times  = COV_TIMES;
+  const speeds = COV_SPEEDS;
 
-    if (!activeCovDriveTime || !times.includes(activeCovDriveTime)) activeCovDriveTime = times[0] || null;
-    if (!activeCovMPH       || activeCovMPH === 'ALL' || !speeds.includes(activeCovMPH)) activeCovMPH = speeds[0] || null;
-
-    const timeHtml  = times.map(t =>
-      `<button class="cov-sub-tab${activeCovDriveTime===t?' active':''}" onclick="selectCovDriveTime('${t}')">${t} min</button>`
-    ).join('');
-    const speedHtml = speeds.map(s =>
-      `<button class="cov-sub-tab${activeCovMPH===s?' active':''}" onclick="selectCovMPH('${s}')">${s} mph</button>`
-    ).join('');
-
-    document.getElementById('coverage-sub-tabs').innerHTML =
-      `<span class="cov-sub-label">Time</span><div class="cov-pill-group">${timeHtml}</div>`
-      + `<div class="cov-sub-sep"></div>`
-      + `<span class="cov-sub-label">MPH</span><div class="cov-pill-group">${speedHtml}</div>`;
-    return;
-  }
-
-  const allFeats = activeCovView === 'road'
-    ? (DRIVE_TIME_ROADS?.features || [])
-    : (DRIVE_TIME_GEO?.features   || []);
-
-  const times = [...new Set(allFeats.map(f => String(parseFloat(f.properties.minutes))))]
-    .filter(t => !isNaN(parseFloat(t))).sort((a,b) => parseFloat(a)-parseFloat(b));
-  if (!activeCovDriveTime && times.length) activeCovDriveTime = times[0];
-
-  const speeds = [...new Set(allFeats.map(f => String(parseFloat(f.properties.speed_mph))))]
-    .filter(s => !isNaN(parseFloat(s))).sort((a,b) => parseFloat(a)-parseFloat(b));
+  if (!activeCovDriveTime || !times.includes(activeCovDriveTime)) activeCovDriveTime = times[0];
   const offerAllMPH = activeCovView === 'polygons' && activeStation !== 'ALL';
   if (!activeCovMPH || (activeCovMPH === 'ALL' && !offerAllMPH)) {
-    activeCovMPH = offerAllMPH ? 'ALL' : (speeds[0] || null);
+    activeCovMPH = offerAllMPH ? 'ALL' : speeds[0];
   }
 
   const timeHtml = times.map(t =>
@@ -1372,7 +1404,7 @@ function buildCoverageSubTabs() {
     + `<div class="cov-pill-group">${speedHtml}</div>`;
 }
 
-function selectCovView(view) {
+async function selectCovView(view) {
   activeCovView = view;
   // Reset MPH default when switching views so the All/specific logic re-evaluates
   activeCovMPH = null;
@@ -1380,6 +1412,7 @@ function selectCovView(view) {
     t.classList.toggle('active', t.dataset.view === view)
   );
   buildCoverageSubTabs();
+  await loadCovBucket(activeCovDriveTime);
   renderCoverageLayer();
   showCoverageOverview();
 }
@@ -1391,9 +1424,10 @@ function selectCovMPH(mph) {
   showCoverageOverview();
 }
 
-function selectCovDriveTime(dt) {
+async function selectCovDriveTime(dt) {
   activeCovDriveTime = dt;
   buildCoverageSubTabs();
+  await loadCovBucket(dt);
   renderCoverageLayer();
   showCoverageOverview();
 }
@@ -2337,272 +2371,6 @@ function showCampusDetail(campus) {
     </div>`;
 
   map.setView([campus.lat, campus.lng], Math.max(map.getZoom(), 15), { animate: true });
-}
-
-// ── INFO PANEL ────────────────────────────────────────────────────────────
-let INFO_DATA = null;
-
-async function loadInfoData() {
-  if (INFO_DATA) return INFO_DATA;
-  try {
-    const resp = await fetch('data/map_info.json');
-    if (!resp.ok) throw new Error('map_info.json not found');
-    INFO_DATA = await resp.json();
-  } catch (e) {
-    console.warn('[NPFR] map_info.json load failed:', e);
-    INFO_DATA = {};
-  }
-  return INFO_DATA;
-}
-
-async function openInfoPanel() {
-  const overlay = document.getElementById('info-overlay');
-  overlay.classList.add('open');
-  document.body.style.overflow = 'hidden';
-  const body = document.getElementById('info-panel-body');
-  body.innerHTML = '<div id="info-loading">Loading…</div>';
-  const data = await loadInfoData();
-  renderInfoPanel(data, activeMode);
-}
-
-function closeInfoPanel(e) {
-  if (e && e.target !== document.getElementById('info-overlay') && e.target !== document.getElementById('info-close-btn')) return;
-  document.getElementById('info-overlay').classList.remove('open');
-  document.body.style.overflow = '';
-}
-
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') {
-    document.getElementById('info-overlay').classList.remove('open');
-    document.body.style.overflow = '';
-  }
-});
-
-function renderInfoPanel(data, mode) {
-  const body  = document.getElementById('info-panel-body');
-  const title = document.getElementById('info-panel-title');
-  const modeData = data?.modes?.[mode] || {};
-  const global   = data?.global  || {};
-
-  title.textContent = modeData.title || 'About This Map';
-
-  let html = '';
-
-  html += `
-    <div class="info-mode-badge">◉ ${mode.toUpperCase()} MODE</div>
-    <div class="info-mode-title">${modeData.title || ''}</div>
-    <div class="info-mode-subtitle">${modeData.subtitle || ''}</div>
-  `;
-
-  if (modeData.overview) {
-    html += `<div class="info-section">
-      <div class="info-section-title">Overview</div>
-      <p class="info-body-text">${modeData.overview}</p>
-    </div>`;
-  }
-
-  if (modeData.how_it_works) {
-    html += `<div class="info-section">
-      <div class="info-section-title">How It's Built</div>
-      <p class="info-body-text">${modeData.how_it_works}</p>
-    </div>`;
-  }
-
-  // COMMUNITY
-  if (mode === 'community') {
-    if (modeData.choropleth) {
-      html += `<div class="info-section"><div class="info-section-title">Key Term</div>
-        <div class="info-term-grid"><div class="info-term-card">
-          <div class="info-term-name">${modeData.choropleth.term}</div>
-          <div class="info-term-def">${modeData.choropleth.definition}</div>
-        </div></div></div>`;
-    }
-    if (modeData.metrics?.length) {
-      html += `<div class="info-section"><div class="info-section-title">Available Metrics</div>
-        <div class="info-item-list">`;
-      for (const m of modeData.metrics) {
-        html += `<div class="info-item">
-          <div class="info-item-label">${m.label}</div>
-          <div class="info-item-desc">${m.description}</div>
-        </div>`;
-      }
-      html += `</div></div>`;
-    }
-  }
-
-  // INCIDENT
-  if (mode === 'incident') {
-    const sm = modeData.scoring_model;
-    if (sm) {
-      html += `<div class="info-section">
-        <div class="info-section-title">${sm.title}</div>
-        <p class="info-body-text">${sm.description}</p>
-        <div class="info-scoring-axes">`;
-      for (const ax of (sm.axes || [])) {
-        html += `<div class="info-axis-card">
-          <div class="info-axis-name">${ax.name}</div>
-          <div class="info-axis-scores">${ax.scores}</div>
-          <div class="info-axis-desc">${ax.description}</div>
-        </div>`;
-      }
-      html += `</div>`;
-      if (sm.formula) {
-        html += `<div class="info-formula-box">
-          <div class="info-formula-label">Formula</div>
-          <div class="info-formula">${sm.formula}</div>
-          <div class="info-formula-note">${sm.formula_note}</div>
-          <div class="info-formula-example"><strong>Example:</strong> ${sm.example}</div>
-        </div>`;
-      }
-      html += `</div>`;
-    }
-    if (modeData.risk_levels?.length) {
-      html += `<div class="info-section"><div class="info-section-title">Risk Level Bins</div>
-        <div class="info-item-list">`;
-      for (const r of modeData.risk_levels) {
-        html += `<div class="info-item">
-          <div class="info-item-label"><span class="info-item-dot" style="background:${r.color}"></span>${r.level}${r.score_range ? `<br><span style="font-size:11px;font-weight:400;color:var(--muted)">score ${r.score_range}</span>` : ''}</div>
-          <div class="info-item-desc">${r.description}</div>
-        </div>`;
-      }
-      html += `</div></div>`;
-    }
-    if (modeData.programs?.length) {
-      html += `<div class="info-section"><div class="info-section-title">Response Programs</div>
-        <div class="info-item-list">`;
-      for (const p of modeData.programs) {
-        html += `<div class="info-item">
-          <div class="info-item-label"><span class="info-item-dot" style="background:${p.color}"></span>${p.key}</div>
-          <div class="info-item-desc">${p.description}</div>
-        </div>`;
-      }
-      html += `</div></div>`;
-    }
-    if (modeData.opacity_ramp) {
-      html += `<div class="info-section"><div class="info-section-title">Map Rendering</div>
-        <div class="info-term-grid"><div class="info-term-card">
-          <div class="info-term-name">${modeData.opacity_ramp.term}</div>
-          <div class="info-term-def">${modeData.opacity_ramp.definition}</div>
-        </div></div></div>`;
-    }
-  }
-
-  // COVERAGE
-  if (mode === 'coverage') {
-    if (modeData.views?.length) {
-      html += `<div class="info-section"><div class="info-section-title">Map Views</div>
-        <div class="info-item-list">`;
-      for (const v of modeData.views) {
-        html += `<div class="info-item">
-          <div class="info-item-label">${v.label}</div>
-          <div class="info-item-desc">${v.description}</div>
-        </div>`;
-      }
-      html += `</div></div>`;
-    }
-    if (modeData.terms?.length) {
-      html += `<div class="info-section"><div class="info-section-title">Key Terms</div>
-        <div class="info-term-grid">`;
-      for (const t of modeData.terms) {
-        html += `<div class="info-term-card">
-          <div class="info-term-name">${t.term}</div>
-          <div class="info-term-def">${t.definition}</div>
-        </div>`;
-      }
-      html += `</div></div>`;
-    }
-    if (modeData.nfpa_context) {
-      html += `<div class="info-section"><div class="info-section-title">NFPA 1710 Context</div>
-        <p class="info-body-text">${modeData.nfpa_context}</p>
-      </div>`;
-    }
-  }
-
-  // HAZARDS
-  if (mode === 'hazards') {
-    const terms = [modeData.flowmsp, modeData.campus_grouping, modeData.gpm, modeData.construction_types, modeData.sprinkler_status].filter(Boolean);
-    if (terms.length) {
-      html += `<div class="info-section"><div class="info-section-title">Key Terms</div>
-        <div class="info-term-grid">`;
-      for (const t of terms) {
-        html += `<div class="info-term-card">
-          <div class="info-term-name">${t.term}</div>
-          <div class="info-term-def">${t.definition}</div>
-        </div>`;
-      }
-      html += `</div></div>`;
-    }
-    if (modeData.flow_tiers?.length) {
-      const tierColors = ['#4a6fa5','#c97a1a','#c0392b','#7b3fa0'];
-      html += `<div class="info-section"><div class="info-section-title">Fire Flow Tiers (Marker Size)</div>
-        <table class="info-gpm-table"><thead><tr><th>Flow Range</th><th>Significance</th></tr></thead><tbody>`;
-      modeData.flow_tiers.forEach((t,i) => {
-        html += `<tr><td><span class="info-gpm-dot" style="background:${tierColors[i]}"></span>${t.label}</td><td>${t.description}</td></tr>`;
-      });
-      html += `</tbody></table></div>`;
-    }
-    if (modeData.categories?.length) {
-      const catColors = { school:'#c97a1a', alf:'#c0392b', assembly:'#3a74b8', multifamily:'#d4a017', commercial:'#1B998B', industrial:'#6A4C93', special:'#7a7a7a' };
-      html += `<div class="info-section"><div class="info-section-title">Occupancy Categories</div>
-        <div class="info-item-list">`;
-      for (const c of modeData.categories) {
-        html += `<div class="info-item">
-          <div class="info-item-label"><span class="info-item-dot" style="background:${catColors[c.key]||'#888'}"></span>${c.label}</div>
-          <div class="info-item-desc">${c.description}</div>
-        </div>`;
-      }
-      html += `</div></div>`;
-    }
-  }
-
-  // ACCREDITATION (all modes)
-  if (modeData.accreditation_relevance) {
-    html += `<div class="info-section">
-      <div class="info-section-title">🏅 CFAI Accreditation Relevance</div>
-      <div class="info-accred-box"><p>${modeData.accreditation_relevance}</p></div>
-    </div>`;
-  }
-
-  html += `<hr class="info-divider">`;
-
-  // GLOBAL: ESZ definition
-  if (global.geography?.esz) {
-    const esz = global.geography.esz;
-    html += `<div class="info-section"><div class="info-section-title">About Emergency Service Zones</div>
-      <div class="info-term-grid"><div class="info-term-card">
-        <div class="info-term-name">${esz.term}</div>
-        <div class="info-term-def">${esz.definition}</div>
-      </div></div>
-      <p class="info-body-text" style="margin-top:10px;font-size:13px;color:var(--muted)">${esz.source}</p>
-    </div>`;
-  }
-
-  // GLOBAL: Accreditation
-  if (global.accreditation) {
-    const a = global.accreditation;
-    html += `<div class="info-section"><div class="info-section-title">CFAI Accreditation Program</div>
-      <div class="info-term-grid"><div class="info-term-card">
-        <div class="info-term-name">${a.body} — ${a.program}</div>
-        <div class="info-term-def">${a.purpose}</div>
-      </div></div>
-    </div>`;
-  }
-
-  // GLOBAL: Data sources
-  if (global.data_sources?.length) {
-    html += `<div class="info-section"><div class="info-section-title">Data Sources</div>
-      <ul class="info-sources">`;
-    for (const s of global.data_sources) {
-      html += `<li>${s}</li>`;
-    }
-    html += `</ul>`;
-    if (global.pipeline) {
-      html += `<p class="info-body-text" style="margin-top:10px;font-size:13px">${global.pipeline}</p>`;
-    }
-    html += `</div>`;
-  }
-
-  body.innerHTML = html;
 }
 
 // ── BOOT ──────────────────────────────────────────────────────────────────
